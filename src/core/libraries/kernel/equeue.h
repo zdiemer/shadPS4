@@ -133,7 +133,8 @@ struct EqueueEvent {
     }
 
     bool operator==(const EqueueEvent& ev) const {
-        return ev.event.ident == event.ident && ev.event.filter == event.filter;
+        return ev.event.ident == event.ident && ev.event.filter == event.filter &&
+               (event.filter != OrbisKernelEvent::Filter::VideoOut || ev.data == data);
     }
 
 private:
@@ -158,9 +159,10 @@ public:
     bool AddEvent(EqueueEvent& event);
     bool ScheduleEvent(u64 id, s16 filter,
                        void (*callback)(OrbisKernelEqueue, const OrbisKernelEvent&));
-    bool RemoveEvent(u64 id, s16 filter);
+    bool RemoveEvent(u64 id, s16 filter, const void* event_source = nullptr);
     int WaitForEvents(OrbisKernelEvent* ev, int num, const OrbisKernelUseconds* timo);
-    bool TriggerEvent(u64 ident, s16 filter, void* trigger_data);
+    bool TriggerEvent(u64 ident, s16 filter, void* trigger_data,
+                      const void* event_source = nullptr);
     int GetTriggeredEvents(OrbisKernelEvent* ev, int num);
 
     bool AddSmallTimer(EqueueEvent& event);

@@ -41,72 +41,90 @@ constexpr u32 PixelFormatBpp(PixelFormat pixel_format) {
 }
 
 VideoOutDriver::VideoOutDriver(u32 width, u32 height) {
-    main_port.resolution.full_width = width;
-    main_port.resolution.full_height = height;
-    main_port.resolution.pane_width = width;
-    main_port.resolution.pane_height = height;
+    for (auto* port : {&main_port, &social_port}) {
+        port->resolution.full_width = width;
+        port->resolution.full_height = height;
+        port->resolution.pane_width = width;
+        port->resolution.pane_height = height;
+    }
     present_thread = std::jthread([&](std::stop_token token) { PresentThread(token); });
 }
 
 VideoOutDriver::~VideoOutDriver() = default;
 
-int VideoOutDriver::Open(const ServiceThreadParams* params) {
-    if (main_port.is_open) {
+int VideoOutDriver::Open(s32 bus_type, const ServiceThreadParams* params) {
+    const s32 handle = bus_type == SCE_VIDEO_OUT_BUS_TYPE_MAIN ? 1 : 2;
+    auto* port = GetPort(handle);
+    std::scoped_lock lock{mutex};
+    if (port->is_open) {
         return ORBIS_VIDEO_OUT_ERROR_RESOURCE_BUSY;
     }
-    main_port.is_open = true;
-    liverpool->SetVoPort(&main_port);
-    return 1;
+    port->is_open = true;
+    liverpool->SetVoPort(port, handle - 1);
+    return handle;
 }
 
 void VideoOutDriver::Close(s32 handle) {
+    auto* port = GetPort(handle);
     std::scoped_lock lock{mutex};
 
     // Mark as closed
-    main_port.is_open = false;
-    main_port.flip_rate = 0;
-    main_port.prev_index = -1;
+    port->is_open = false;
+    port->flip_rate = 0;
+    port->prev_index = -1;
 
     // Clear port information
-    std::memset(main_port.buffer_labels.data(), 0, sizeof(main_port.buffer_labels));
-    std::memset(main_port.groups.data(), 0, sizeof(main_port.groups));
-    std::memset(&main_port.vblank_status, 0, sizeof(main_port.vblank_status));
-    main_port.flip_status = FlipStatus{};
+    std::memset(port->buffer_labels.data(), 0, sizeof(port->buffer_labels));
+    std::memset(port->groups.data(), 0, sizeof(port->groups));
+    std::memset(&port->vblank_status, 0, sizeof(port->vblank_status));
+    port->flip_status = FlipStatus{};
 
     // Re-initialize buffers
-    std::memset(main_port.buffer_slots.data(), 0, sizeof(main_port.buffer_slots));
-    for (auto& buffer : main_port.buffer_slots) {
+    std::memset(port->buffer_slots.data(), 0, sizeof(port->buffer_slots));
+    for (auto& buffer : port->buffer_slots) {
         buffer.group_index = -1;
     }
 
     // Clear events
-    for (auto event : main_port.flip_events) {
+    for (auto event : port->flip_events) {
         auto equeue = Kernel::GetEqueue(event);
         if (equeue != nullptr) {
             equeue->RemoveEvent(static_cast<u64>(OrbisVideoOutInternalEventId::Flip),
-                                Kernel::OrbisKernelEvent::Filter::VideoOut);
+                                Kernel::OrbisKernelEvent::Filter::VideoOut, port);
         }
     }
-    main_port.flip_events.clear();
-    for (auto event : main_port.vblank_events) {
+    port->flip_events.clear();
+    for (auto event : port->vblank_events) {
         auto equeue = Kernel::GetEqueue(event);
         if (equeue != nullptr) {
             equeue->RemoveEvent(static_cast<u64>(OrbisVideoOutInternalEventId::Vblank),
-                                Kernel::OrbisKernelEvent::Filter::VideoOut);
+                                Kernel::OrbisKernelEvent::Filter::VideoOut, port);
         }
     }
-    main_port.vblank_events.clear();
+    port->vblank_events.clear();
 }
 
 VideoOutPort* VideoOutDriver::GetPort(int handle) {
-    if (handle != 1) [[unlikely]] {
+    switch (handle) {
+    case 1:
+        return &main_port;
+    case 2:
+        return &social_port;
+    default:
         return nullptr;
     }
-    return &main_port;
 }
 
 int VideoOutDriver::RegisterBuffers(VideoOutPort* port, s32 startIndex, void* const* addresses,
                                     s32 bufferNum, const BufferAttribute* attribute) {
+    if (!Is32BppPixelFormat(attribute->pixel_format)) {
+        LOG_ERROR(Lib_VideoOut,
+                  "Unsupported pixel format = {:#x}, width = {}, height = {}, pitch = {}, "
+                  "tiling = {}",
+                  static_cast<u32>(attribute->pixel_format), attribute->width, attribute->height,
+                  attribute->pitch_in_pixel, static_cast<s32>(attribute->tiling_mode));
+        return ORBIS_VIDEO_OUT_ERROR_INVALID_PIXEL_FORMAT;
+    }
     const s32 group_index = port->FindFreeGroup();
     if (group_index >= MaxDisplayBufferGroups) {
         return ORBIS_VIDEO_OUT_ERROR_NO_EMPTY_SLOT;
@@ -264,7 +282,8 @@ void VideoOutDriver::Flip(const Request& req) {
                 static_cast<u64>(OrbisVideoOutInternalEventId::Flip),
                 Kernel::OrbisKernelEvent::Filter::VideoOut,
                 reinterpret_cast<void*>(static_cast<u64>(OrbisVideoOutInternalEventId::Flip) |
-                                        (req.flip_arg << 16)));
+                                        (req.flip_arg << 16)),
+                port);
         }
     }
 
@@ -327,7 +346,7 @@ void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_
     }
 
     std::scoped_lock lock{mutex};
-    requests.push({
+    requests[port == &main_port ? 0 : 1].push({
         .frame = frame,
         .port = port,
         .flip_arg = flip_arg,
@@ -347,10 +366,19 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
 
     const auto receive_request = [this] -> Request {
         std::scoped_lock lk{mutex};
-        if (!requests.empty()) {
-            const auto request = requests.front();
-            requests.pop();
-            return request;
+        for (u32 offset = 0; offset < requests.size(); ++offset) {
+            const u32 index = (next_request_port + offset) % requests.size();
+            auto& queue = requests[index];
+            if (queue.empty()) {
+                continue;
+            }
+            const auto request = queue.front();
+            const auto* port = request.port;
+            if (port->vblank_status.count % (port->flip_rate + 1) == 0) {
+                queue.pop();
+                next_request_port = (index + 1) % requests.size();
+                return request;
+            }
         }
         return {};
     };
@@ -364,30 +392,24 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
             continue;
         }
 
-        // Check if it's time to take a request.
-        auto& vblank_status = main_port.vblank_status;
-        if (vblank_status.count % (main_port.flip_rate + 1) == 0) {
-            const auto request = receive_request();
-            if (!request) {
-                if (timer.GetTotalWait().count() < 0) { // Dont draw too fast
-                    if (!main_port.is_open) {
-                        DrawBlankFrame();
-                    } else if (ImGui::Core::MustKeepDrawing()) {
-                        DrawLastFrame();
-                    }
+        const auto request = receive_request();
+        if (!request) {
+            if (timer.GetTotalWait().count() < 0) {
+                if (!main_port.is_open && !social_port.is_open) {
+                    DrawBlankFrame();
+                } else if (ImGui::Core::MustKeepDrawing()) {
+                    DrawLastFrame();
                 }
-            } else {
-                Flip(request);
-                FRAME_END;
             }
+        } else {
+            Flip(request);
+            FRAME_END;
         }
 
-        {
-            // Needs lock here as can be concurrently read by `sceVideoOutGetVblankStatus`
-            std::scoped_lock lock{main_port.vo_mutex};
-
-            // Trigger flip events for the port
-            for (auto event : main_port.vblank_events) {
+        for (auto* port : {&main_port, &social_port}) {
+            std::scoped_lock lock{port->vo_mutex};
+            auto& vblank_status = port->vblank_status;
+            for (auto event : port->vblank_events) {
                 auto equeue = Kernel::GetEqueue(event);
                 if (equeue != nullptr) {
                     equeue->TriggerEvent(
@@ -395,15 +417,14 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
                         Kernel::OrbisKernelEvent::Filter::VideoOut,
                         reinterpret_cast<void*>(
                             static_cast<u64>(OrbisVideoOutInternalEventId::Vblank) |
-                            (vblank_status.count << 16)));
+                            (vblank_status.count << 16)),
+                        port);
                 }
             }
-
-            // Update vblank status
             vblank_status.count++;
             vblank_status.process_time = Libraries::Kernel::sceKernelGetProcessTime();
             vblank_status.tsc = Libraries::Kernel::sceKernelReadTsc();
-            main_port.vblank_cv.notify_all();
+            port->vblank_cv.notify_all();
         }
 
         timer.End();

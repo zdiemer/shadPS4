@@ -75,8 +75,9 @@ s32 PS4_SYSV_ABI sceVideoOutDeleteFlipEvent(Kernel::OrbisKernelEqueue eq, s32 ha
     if (equeue == nullptr) {
         return ORBIS_VIDEO_OUT_ERROR_INVALID_EVENT_QUEUE;
     }
-    equeue->RemoveEvent(handle, Kernel::OrbisKernelEvent::Filter::VideoOut);
-    port->flip_events.erase(find(port->flip_events.begin(), port->flip_events.end(), eq));
+    equeue->RemoveEvent(static_cast<u64>(OrbisVideoOutInternalEventId::Flip),
+                        Kernel::OrbisKernelEvent::Filter::VideoOut, port);
+    std::erase(port->flip_events, eq);
     return ORBIS_OK;
 }
 
@@ -117,8 +118,9 @@ s32 PS4_SYSV_ABI sceVideoOutDeleteVblankEvent(Kernel::OrbisKernelEqueue eq, s32 
     if (equeue == nullptr) {
         return ORBIS_VIDEO_OUT_ERROR_INVALID_EVENT_QUEUE;
     }
-    equeue->RemoveEvent(handle, Kernel::OrbisKernelEvent::Filter::VideoOut);
-    port->vblank_events.erase(find(port->vblank_events.begin(), port->vblank_events.end(), eq));
+    equeue->RemoveEvent(static_cast<u64>(OrbisVideoOutInternalEventId::Vblank),
+                        Kernel::OrbisKernelEvent::Filter::VideoOut, port);
+    std::erase(port->vblank_events, eq);
     return ORBIS_OK;
 }
 
@@ -297,8 +299,13 @@ s32 PS4_SYSV_ABI sceVideoOutGetResolutionStatus(s32 handle, SceVideoOutResolutio
 
 s32 PS4_SYSV_ABI sceVideoOutOpen(Libraries::UserService::OrbisUserServiceUserId userId, s32 busType,
                                  s32 index, const void* param) {
-    LOG_INFO(Lib_VideoOut, "called");
-    ASSERT(busType == SCE_VIDEO_OUT_BUS_TYPE_MAIN);
+    LOG_INFO(Lib_VideoOut, "user_id = {}, bus_type = {}, index = {}, param = {}", userId, busType,
+             index, param);
+    if (busType != SCE_VIDEO_OUT_BUS_TYPE_MAIN &&
+        busType != SCE_VIDEO_OUT_BUS_TYPE_AUX_SOCIAL_SCREEN) {
+        LOG_ERROR(Lib_VideoOut, "Unsupported video output bus type = {}", busType);
+        return ORBIS_VIDEO_OUT_ERROR_INVALID_VALUE;
+    }
 
     if (index != 0) {
         LOG_ERROR(Lib_VideoOut, "Index != 0");
@@ -306,7 +313,7 @@ s32 PS4_SYSV_ABI sceVideoOutOpen(Libraries::UserService::OrbisUserServiceUserId 
     }
 
     auto* params = reinterpret_cast<const ServiceThreadParams*>(param);
-    int handle = driver->Open(params);
+    int handle = driver->Open(busType, params);
 
     if (handle < 0) {
         LOG_ERROR(Lib_VideoOut, "All available handles are open");
@@ -317,6 +324,10 @@ s32 PS4_SYSV_ABI sceVideoOutOpen(Libraries::UserService::OrbisUserServiceUserId 
 }
 
 s32 PS4_SYSV_ABI sceVideoOutClose(s32 handle) {
+    const auto* port = driver->GetPort(handle);
+    if (!port || !port->is_open) {
+        return ORBIS_VIDEO_OUT_ERROR_INVALID_HANDLE;
+    }
     driver->Close(handle);
     return ORBIS_OK;
 }

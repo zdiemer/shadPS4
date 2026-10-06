@@ -47,7 +47,6 @@ static void TimerCallback(OrbisKernelEqueue eq, const OrbisKernelEvent& kevent) 
     }
 }
 
-// Events are uniquely identified by id and filter.
 bool EqueueInternal::AddEvent(EqueueEvent& event) {
     // Save id and filter before event is moved into m_events.
     const u64 id = event.event.ident;
@@ -74,10 +73,7 @@ bool EqueueInternal::AddEvent(EqueueEvent& event) {
             event.timer_interval = std::chrono::nanoseconds(ts.tv_nsec + ts.tv_sec * 1000000000);
         }
 
-        // First, check if there's already an event with the same id and filter.
-        const auto& find_it = std::ranges::find_if(m_events, [id, filter](auto& ev) {
-            return ev.event.ident == id && ev.event.filter == filter;
-        });
+        const auto& find_it = std::ranges::find(m_events, event);
         // If there is a duplicate event, we need to update that instead.
         if (find_it != m_events.cend()) {
             // Specifically, update user data and timer_interval.
@@ -158,12 +154,13 @@ bool EqueueInternal::ScheduleEvent(u64 id, s16 filter,
     return true;
 }
 
-bool EqueueInternal::RemoveEvent(u64 id, s16 filter) {
+bool EqueueInternal::RemoveEvent(u64 id, s16 filter, const void* event_source) {
     bool has_found = false;
     std::scoped_lock lock{m_mutex};
 
-    const auto& it = std::ranges::find_if(m_events, [id, filter](auto& ev) {
-        return ev.event.ident == id && ev.event.filter == filter;
+    const auto& it = std::ranges::find_if(m_events, [id, filter, event_source](auto& ev) {
+        return ev.event.ident == id && ev.event.filter == filter &&
+               (!event_source || ev.data == event_source);
     });
     if (it != m_events.cend()) {
         m_events.erase(it);
@@ -205,12 +202,14 @@ int EqueueInternal::WaitForEvents(OrbisKernelEvent* ev, int num, const OrbisKern
     return count;
 }
 
-bool EqueueInternal::TriggerEvent(u64 ident, s16 filter, void* trigger_data) {
+bool EqueueInternal::TriggerEvent(u64 ident, s16 filter, void* trigger_data,
+                                  const void* event_source) {
     bool has_found = false;
     {
         std::scoped_lock lock{m_mutex};
         for (auto& event : m_events) {
-            if (event.event.ident == ident && event.event.filter == filter) {
+            if (event.event.ident == ident && event.event.filter == filter &&
+                (!event_source || event.data == event_source)) {
                 if (filter == OrbisKernelEvent::Filter::VideoOut) {
                     event.TriggerDisplay(trigger_data);
                 } else if (filter == OrbisKernelEvent::Filter::User) {

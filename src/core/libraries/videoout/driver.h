@@ -79,7 +79,7 @@ public:
     VideoOutDriver(u32 width, u32 height);
     ~VideoOutDriver();
 
-    int Open(const ServiceThreadParams* params);
+    int Open(s32 bus_type, const ServiceThreadParams* params);
     void Close(s32 handle);
 
     VideoOutPort* GetPort(s32 handle);
@@ -113,8 +113,10 @@ private:
 
     std::mutex mutex;
     VideoOutPort main_port{};
+    VideoOutPort social_port{};
     std::jthread present_thread;
-    std::queue<Request> requests;
+    std::array<std::queue<Request>, 2> requests;
+    u32 next_request_port{};
 };
 
 } // namespace Libraries::VideoOut

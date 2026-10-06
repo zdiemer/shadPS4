@@ -785,9 +785,16 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 // there are no other submits to yield to we can sleep the thread
                 // instead and allow other tasks to run.
                 const u64* wait_addr = wait_reg_mem->Address<u64*>();
-                if (vo_port->IsVoLabel(wait_addr) &&
-                    num_submits == mapped_queues[GfxQueueId].submits.size()) {
-                    vo_port->WaitVoLabel([&] { return wait_reg_mem->Test(regs.reg_array); });
+                Libraries::VideoOut::VideoOutPort* label_port = nullptr;
+                for (const auto& entry : vo_ports) {
+                    auto* port = entry.load();
+                    if (port && port->IsVoLabel(wait_addr)) {
+                        label_port = port;
+                        break;
+                    }
+                }
+                if (label_port && num_submits == mapped_queues[GfxQueueId].submits.size()) {
+                    label_port->WaitVoLabel([&] { return wait_reg_mem->Test(regs.reg_array); });
                     break;
                 }
                 while (!wait_reg_mem->Test(regs.reg_array)) {

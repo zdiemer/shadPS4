@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <condition_variable>
 #include <coroutine>
 #include <exception>
@@ -88,8 +89,8 @@ public:
         return num_submits == 0;
     }
 
-    void SetVoPort(Libraries::VideoOut::VideoOutPort* port) {
-        vo_port = port;
+    void SetVoPort(Libraries::VideoOut::VideoOutPort* port, u32 index) {
+        vo_ports[index].store(port);
     }
 
     void BindRasterizer(Vulkan::Rasterizer* rasterizer_) {
@@ -229,7 +230,7 @@ private:
     } cblock{};
 
     Vulkan::Rasterizer* rasterizer{};
-    Libraries::VideoOut::VideoOutPort* vo_port{};
+    std::array<std::atomic<Libraries::VideoOut::VideoOutPort*>, 2> vo_ports{};
     const bool guest_markers_enabled;
     std::jthread process_thread{};
     std::atomic<u32> num_submits{};
