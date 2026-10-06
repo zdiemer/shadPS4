@@ -8,6 +8,7 @@
 #include "core/libraries/hmd/hmd_error.h"
 #include "core/libraries/kernel/process.h"
 #include "core/libraries/libs.h"
+#include "input/vr_state.h"
 
 namespace Libraries::Hmd {
 
@@ -16,6 +17,25 @@ static s32 g_firmware_version = 0;
 static s32 g_internal_handle = 0;
 static Libraries::UserService::OrbisUserServiceUserId g_user_id = -1;
 
+static OrbisHmdDeviceStatus GetDeviceStatus(const Input::Vr::DeviceState& state) {
+    if (!state.connected) {
+        return ORBIS_HMD_DEVICE_STATUS_NOT_DETECTED;
+    }
+    return state.session_running ? ORBIS_HMD_DEVICE_STATUS_READY
+                                 : ORBIS_HMD_DEVICE_STATUS_NOT_READY;
+}
+
+static void FillDeviceInformation(OrbisHmdDeviceInformation& info) {
+    const auto state = Input::Vr::GetDeviceState();
+    info = {};
+    info.status = GetDeviceStatus(state);
+    info.user_id = g_user_id;
+    if (state.connected) {
+        info.device_info.panel_resolution = {1920, 1080};
+        info.hmu_mount = state.mounted;
+    }
+}
+
 s32 PS4_SYSV_ABI sceHmdInitialize(const OrbisHmdInitializeParam* param) {
     if (g_library_initialized) {
         return ORBIS_HMD_ERROR_ALREADY_INITIALIZED;
@@ -23,7 +43,7 @@ s32 PS4_SYSV_ABI sceHmdInitialize(const OrbisHmdInitializeParam* param) {
     if (param == nullptr) {
         return ORBIS_HMD_ERROR_PARAMETER_NULL;
     }
-    LOG_WARNING(Lib_Hmd, "PSVR headsets are not supported yet");
+    LOG_INFO(Lib_Hmd, "HMD library initialized");
     if (param->reserved0 != nullptr) {
         sceHmdDistortionInitialize(param->reserved0);
     }
@@ -38,14 +58,15 @@ s32 PS4_SYSV_ABI sceHmdInitialize315(const OrbisHmdInitializeParam* param) {
     if (param == nullptr) {
         return ORBIS_HMD_ERROR_PARAMETER_NULL;
     }
-    LOG_WARNING(Lib_Hmd, "PSVR headsets are not supported yet");
+    LOG_INFO(Lib_Hmd, "HMD library initialized");
     g_library_initialized = true;
     return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceHmdOpen(Libraries::UserService::OrbisUserServiceUserId user_id, s32 type,
                             s32 index, OrbisHmdOpenParam* param) {
-    LOG_DEBUG(Lib_Hmd, "called");
+    LOG_DEBUG(Lib_Hmd, "user_id = {}, type = {}, index = {}, param = {:#x}", user_id, type, index,
+              reinterpret_cast<uintptr_t>(param));
     if (!g_library_initialized) {
         return ORBIS_HMD_ERROR_NOT_INITIALIZED;
     }
@@ -76,7 +97,7 @@ s32 PS4_SYSV_ABI sceHmdGet2DEyeOffset(s32 handle, OrbisHmdEyeOffset* left_offset
     if (handle != g_internal_handle) {
         return ORBIS_HMD_ERROR_HANDLE_INVALID;
     }
-    if (g_firmware_version >= Common::ElfInfo::FW_450) {
+    if (g_firmware_version >= Common::ElfInfo::FW_450 && !Input::Vr::GetDeviceState().connected) {
         // Due to some faulty in-library checks, a missing headset results in this error
         // instead of the expected ORBIS_HMD_ERROR_DEVICE_DISCONNECTED error.
         return ORBIS_HMD_ERROR_HANDLE_INVALID;
@@ -117,9 +138,7 @@ s32 PS4_SYSV_ABI sceHmdGetDeviceInformation(OrbisHmdDeviceInformation* info) {
         return ORBIS_HMD_ERROR_NOT_INITIALIZED;
     }
 
-    memset(info, 0, sizeof(OrbisHmdDeviceInformation));
-    info->status = OrbisHmdDeviceStatus::ORBIS_HMD_DEVICE_STATUS_NOT_DETECTED;
-    info->user_id = g_user_id;
+    FillDeviceInformation(*info);
     return ORBIS_OK;
 }
 
@@ -128,7 +147,7 @@ s32 PS4_SYSV_ABI sceHmdGetDeviceInformationByHandle(s32 handle, OrbisHmdDeviceIn
     if (handle != g_internal_handle) {
         return ORBIS_HMD_ERROR_HANDLE_INVALID;
     }
-    if (g_firmware_version >= Common::ElfInfo::FW_450) {
+    if (g_firmware_version >= Common::ElfInfo::FW_450 && !Input::Vr::GetDeviceState().connected) {
         // Due to some faulty in-library checks, a missing headset results in this error
         // instead of the expected ORBIS_HMD_ERROR_DEVICE_DISCONNECTED error.
         return ORBIS_HMD_ERROR_HANDLE_INVALID;
@@ -140,9 +159,7 @@ s32 PS4_SYSV_ABI sceHmdGetDeviceInformationByHandle(s32 handle, OrbisHmdDeviceIn
         return ORBIS_HMD_ERROR_NOT_INITIALIZED;
     }
 
-    memset(info, 0, sizeof(OrbisHmdDeviceInformation));
-    info->status = OrbisHmdDeviceStatus::ORBIS_HMD_DEVICE_STATUS_NOT_DETECTED;
-    info->user_id = g_user_id;
+    FillDeviceInformation(*info);
     return ORBIS_OK;
 }
 
@@ -154,7 +171,7 @@ s32 PS4_SYSV_ABI sceHmdGetFieldOfView(s32 handle, OrbisHmdFieldOfView* field_of_
     if (handle != g_internal_handle) {
         return ORBIS_HMD_ERROR_HANDLE_INVALID;
     }
-    if (g_firmware_version >= Common::ElfInfo::FW_450) {
+    if (g_firmware_version >= Common::ElfInfo::FW_450 && !Input::Vr::GetDeviceState().connected) {
         // Due to some faulty in-library checks, a missing headset results in this error
         // instead of the expected ORBIS_HMD_ERROR_DEVICE_DISCONNECTED error.
         return ORBIS_HMD_ERROR_HANDLE_INVALID;
@@ -163,15 +180,11 @@ s32 PS4_SYSV_ABI sceHmdGetFieldOfView(s32 handle, OrbisHmdFieldOfView* field_of_
         return ORBIS_HMD_ERROR_NOT_INITIALIZED;
     }
 
-    // These values are a hardcoded return when a headset is connected.
-    // Leaving this here for future developers.
-    // field_of_view->tan_out = 1.20743;
-    // field_of_view->tan_in = 1.181346;
-    // field_of_view->tan_top = 1.262872;
-    // field_of_view->tan_bottom = 1.262872;
-
-    // Fails internally due to some internal library checks that break without a connected headset.
-    return ORBIS_HMD_ERROR_HANDLE_INVALID;
+    if (!Input::Vr::GetDeviceState().connected) {
+        return ORBIS_HMD_ERROR_HANDLE_INVALID;
+    }
+    *field_of_view = {1.20743f, 1.181346f, 1.262872f, 1.262872f};
+    return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceHmdGetInertialSensorData(s32 handle, void* data, s32 unk) {
@@ -420,8 +433,7 @@ s32 PS4_SYSV_ABI sceHmdInternalGetDeviceStatus(OrbisHmdDeviceStatus* status) {
     if (status == nullptr) {
         return ORBIS_HMD_ERROR_PARAMETER_NULL;
     }
-    // Internal function fails with error DEVICE_DISCONNECTED
-    *status = OrbisHmdDeviceStatus::ORBIS_HMD_DEVICE_STATUS_NOT_DETECTED;
+    *status = GetDeviceStatus(Input::Vr::GetDeviceState());
     return ORBIS_OK;
 }
 
