@@ -12,6 +12,8 @@ class SymbolsResolver;
 
 namespace Libraries::Hmd {
 
+void BindDeviceToUser(Libraries::UserService::OrbisUserServiceUserId user_id);
+
 enum OrbisHmdDeviceStatus : u32 {
     ORBIS_HMD_DEVICE_STATUS_READY,
     ORBIS_HMD_DEVICE_STATUS_NOT_READY,
