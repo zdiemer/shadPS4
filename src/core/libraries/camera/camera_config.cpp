@@ -479,7 +479,7 @@ s32 PS4_SYSV_ABI sceCameraSetExposureGain(s32 handle, OrbisCameraChannel channel
                                           OrbisCameraExposureGain* exposure_gain, void* option) {
     LOG_DEBUG(Lib_Camera, "called");
     if (handle < 1 || channel > OrbisCameraChannel::ORBIS_CAMERA_CHANNEL_BOTH ||
-        channel < OrbisCameraChannel::ORBIS_CAMERA_CHANNEL_0 || exposure_gain != nullptr ||
+        channel < OrbisCameraChannel::ORBIS_CAMERA_CHANNEL_0 || exposure_gain == nullptr ||
         option != nullptr) {
         return ORBIS_CAMERA_ERROR_PARAM;
     }
