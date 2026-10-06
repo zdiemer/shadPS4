@@ -193,6 +193,33 @@ struct OrbisVrTrackerInitParam {
     s32 gpu_queue_id;
 };
 
+struct OrbisVrTrackerInitParam144 {
+    u32 size;
+    OrbisVrTrackerProfile profile;
+    OrbisVrTrackerExecutionMode execution_mode;
+    s32 hmd_thread_priority;
+    s32 pad_thread_priority;
+    s32 move_thread_priority;
+    s32 gun_thread_priority;
+    s32 reserved0;
+    OrbisVrTrackerCalibrationSettings calibration_settings;
+    void* direct_memory_onion;
+    u32 direct_memory_onion_size;
+    u32 direct_memory_onion_alignment;
+    void* direct_memory_garlic;
+    u32 direct_memory_garlic_size;
+    u32 direct_memory_garlic_alignment;
+    void* work_memory;
+    u32 work_memory_size;
+    u32 work_memory_alignment;
+    s32 gpu_pipe_id;
+    s32 gpu_queue_id;
+    u32 reserved1[6];
+};
+
+static_assert(sizeof(OrbisVrTrackerInitParam144) == 144);
+static_assert(offsetof(OrbisVrTrackerInitParam144, direct_memory_onion) == 64);
+
 struct OrbisVrTrackerRecalibrateParam {
     u32 size;
     OrbisVrTrackerDeviceType device_type;

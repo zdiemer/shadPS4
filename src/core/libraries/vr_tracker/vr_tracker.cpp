@@ -69,6 +69,33 @@ s32 PS4_SYSV_ABI sceVrTrackerInit(const OrbisVrTrackerInitParam* param) {
         return ORBIS_VR_TRACKER_ERROR_ALREADY_INITIALIZED;
     }
 
+    OrbisVrTrackerInitParam normalized_param{};
+    if (param->size == sizeof(OrbisVrTrackerInitParam144)) {
+        const auto& supplied = *reinterpret_cast<const OrbisVrTrackerInitParam144*>(param);
+        normalized_param = {
+            .size = sizeof(OrbisVrTrackerInitParam),
+            .profile = supplied.profile,
+            .execution_mode = supplied.execution_mode,
+            .hmd_thread_priority = supplied.hmd_thread_priority,
+            .pad_thread_priority = supplied.pad_thread_priority,
+            .move_thread_priority = supplied.move_thread_priority,
+            .gun_thread_priority = supplied.gun_thread_priority,
+            .calibration_settings = supplied.calibration_settings,
+            .direct_memory_onion = supplied.direct_memory_onion,
+            .direct_memory_onion_size = supplied.direct_memory_onion_size,
+            .direct_memory_onion_alignment = supplied.direct_memory_onion_alignment,
+            .direct_memory_garlic = supplied.direct_memory_garlic,
+            .direct_memory_garlic_size = supplied.direct_memory_garlic_size,
+            .direct_memory_garlic_alignment = supplied.direct_memory_garlic_alignment,
+            .work_memory = supplied.work_memory,
+            .work_memory_size = supplied.work_memory_size,
+            .work_memory_alignment = supplied.work_memory_alignment,
+            .gpu_pipe_id = supplied.gpu_pipe_id,
+            .gpu_queue_id = supplied.gpu_queue_id,
+        };
+        param = &normalized_param;
+    }
+
     // Calculate correct onion size for parameter checks
     u32 required_onion_size = ORBIS_VR_TRACKER_BASE_ONION_SIZE;
     if (param->calibration_settings.move_position == ORBIS_VR_TRACKER_CALIBRATION_AUTO) {
