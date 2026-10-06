@@ -89,6 +89,8 @@ struct BufferResource {
     BufferType buffer_type{};
     bool is_written{};
     bool is_formatted{};
+    bool has_unformatted_access{};
+    bool has_format_override{};
     SharpFetchPostOp post_op{};
     u32 post_op_dw1_mask{};
 

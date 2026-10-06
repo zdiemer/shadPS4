@@ -789,7 +789,10 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
             }
         } else {
             const auto vsharp = desc.GetSharp(stage);
-            if (vsharp.base_address == 0 || vsharp.GetSize() == 0) {
+            const bool is_null_format = desc.is_formatted && !desc.has_unformatted_access &&
+                                        !desc.has_format_override &&
+                                        vsharp.GetDataFmt() == AmdGpu::DataFormat::FormatInvalid;
+            if (vsharp.base_address == 0 || vsharp.GetSize() == 0 || is_null_format) {
                 buffer_infos.emplace_back(VK_NULL_HANDLE, 0, VK_WHOLE_SIZE);
             } else {
                 const u64 size = memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize());
