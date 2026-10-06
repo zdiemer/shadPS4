@@ -6,6 +6,7 @@
 #include "core/emulator_settings.h"
 #include "core/libraries/camera/camera.h"
 #include "core/libraries/camera/camera_helpers.h"
+#include "core/libraries/camera/vr_camera.h"
 #include "core/libraries/error_codes.h"
 #include "core/libraries/kernel/memory.h"
 #include "core/libraries/kernel/process.h"
@@ -54,6 +55,9 @@ s32 PS4_SYSV_ABI sceCameraClose(s32 handle) {
     // If no handles remain, then the library itself is considered closed.
     if (--g_handles == 0) {
         g_library_opened = false;
+        if (IsVrCameraActive()) {
+            CloseVrCamera();
+        }
     }
 
     if (sdl_camera) {
@@ -76,6 +80,9 @@ s32 PS4_SYSV_ABI sceCameraCloseByHandle(s32 handle) {
     // If no handles remain, then the library itself is considered closed.
     if (--g_handles == 0) {
         g_library_opened = false;
+        if (IsVrCameraActive()) {
+            CloseVrCamera();
+        }
     }
     return ORBIS_OK;
 }
@@ -89,6 +96,9 @@ s32 PS4_SYSV_ABI sceCameraGetFrameData(s32 handle, OrbisCameraFrameData* frame_d
     frame_data->status[1] = -1;
     if (handle < 1 || frame_data->sizeThis > 584) {
         return ORBIS_CAMERA_ERROR_PARAM;
+    }
+    if (g_library_opened && IsVrCameraActive()) {
+        return ReadVrCamera(frame_data);
     }
     if (!g_library_opened || !sdl_camera) {
         return ORBIS_CAMERA_ERROR_NOT_OPEN;
@@ -196,7 +206,7 @@ s32 PS4_SYSV_ABI sceCameraIsAttached(s32 index) {
         return ORBIS_CAMERA_ERROR_PARAM;
     }
     // 0 = disconnected, 1 = connected
-    return EmulatorSettings.GetCameraId() == -1 ? 0 : 1;
+    return EmulatorSettings.GetCameraId() != -1 || IsVrCameraAvailable() ? 1 : 0;
 }
 
 s32 PS4_SYSV_ABI sceCameraIsConfigChangeDone() {
@@ -251,13 +261,18 @@ s32 PS4_SYSV_ABI sceCameraOpen(Libraries::UserService::OrbisUserServiceUserId us
         raw16_buffer2 = (u16*)remaining_camera_buf;
         remaining_camera_buf += raw16_buffer_size;
 
-        ASSERT(remaining_camera_buf <= (u8*)camera_garlic_pool + camera_system_mem_size);
+        InitializeVrCameraBuffers(remaining_camera_buf);
+
+        ASSERT(remaining_camera_buf + 5440000 <= (u8*)camera_garlic_pool + camera_system_mem_size);
 
         ASSERT(Core::Memory::Instance()->IsValidGpuMapping((VAddr)camera_garlic_pool,
                                                            camera_system_mem_size));
         buffers_initialized = true;
     }
 
+    if (g_handles == 0 && IsVrCameraAvailable()) {
+        OpenVrCamera();
+    }
     g_library_opened = true;
     return ++g_handles;
 }
@@ -294,8 +309,12 @@ s32 PS4_SYSV_ABI sceCameraStart(s32 handle, OrbisCameraStartParameter* param) {
         return ORBIS_CAMERA_ERROR_FORMAT_UNKNOWN;
     }
 
-    if (param->formatLevel[0] > 1 || param->formatLevel[1] > 1) {
+    if (!IsVrCameraActive() && (param->formatLevel[0] > 1 || param->formatLevel[1] > 1)) {
         LOG_ERROR(Lib_Camera, "Downscaled image retrieval isn't supported yet!");
+    }
+
+    if (IsVrCameraActive()) {
+        return StartVrCamera(*param);
     }
 
     SDL_CameraID* devices = NULL;
@@ -353,6 +372,9 @@ s32 PS4_SYSV_ABI sceCameraStart(s32 handle, OrbisCameraStartParameter* param) {
 }
 
 s32 PS4_SYSV_ABI sceCameraStartByHandle(s32 handle, OrbisCameraStartParameter* param) {
+    if (IsVrCameraActive()) {
+        return sceCameraStart(handle, param);
+    }
     LOG_DEBUG(Lib_Camera, "called");
     if (handle < 1 || param == nullptr || param->sizeThis != sizeof(OrbisCameraStartParameter)) {
         return ORBIS_CAMERA_ERROR_PARAM;
@@ -373,7 +395,7 @@ s32 PS4_SYSV_ABI sceCameraStop(s32 handle) {
         return ORBIS_CAMERA_ERROR_NOT_OPEN;
     }
 
-    return ORBIS_OK;
+    return IsVrCameraActive() ? StopVrCamera() : ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceCameraStopByHandle(s32 handle) {

@@ -4,6 +4,7 @@
 #include "common/logging/log.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/camera/camera.h"
+#include "core/libraries/camera/vr_camera.h"
 
 namespace Libraries::Camera {
 
@@ -57,6 +58,10 @@ s32 PS4_SYSV_ABI sceCameraGetCalibrationData(const OrbisCameraGetCalibrationData
             OrbisCameraCalibrationDataFunctionType::
                 ORBIS_CAMERA_CALIBRATION_DATA_FUNCTION_TYPE_IMAGE_INVERSE_RECTIFICATION) {
         return ORBIS_CAMERA_ERROR_PARAM;
+    }
+    if (IsVrCameraAvailable()) {
+        GetVrCameraCalibration(*param, calibration_data);
+        return ORBIS_OK;
     }
     if (EmulatorSettings.GetCameraId() == -1) {
         return ORBIS_CAMERA_ERROR_NOT_CONNECTED;

@@ -5,6 +5,7 @@
 #include "common/logging/log.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/camera/camera.h"
+#include "core/libraries/camera/vr_camera.h"
 
 namespace Libraries::Camera {
 
@@ -54,7 +55,7 @@ s32 PS4_SYSV_ABI sceCameraGetAutoExposureGain(s32 handle, OrbisCameraChannel cha
         return ORBIS_CAMERA_ERROR_NOT_OPEN;
     }
 
-    *enable = 0;
+    *enable = IsVrCameraActive() ? GetVrCameraAutoExposure(channel) : 0;
     if (option != nullptr) {
         option->sizeThis = 0;
         option->target = OrbisCameraAecAgcTarget::ORBIS_CAMERA_ATTRIBUTE_AECAGC_TARGET_DEF;
@@ -74,7 +75,7 @@ s32 PS4_SYSV_ABI sceCameraGetAutoWhiteBalance(s32 handle, OrbisCameraChannel cha
         return ORBIS_CAMERA_ERROR_NOT_OPEN;
     }
 
-    *enable = 0;
+    *enable = IsVrCameraActive() ? GetVrCameraAutoWhiteBalance(channel) : 0;
     return ORBIS_OK;
 }
 
@@ -85,6 +86,11 @@ s32 PS4_SYSV_ABI sceCameraGetConfig(s32 handle, OrbisCameraConfig* config) {
     }
     if (!g_library_opened) {
         return ORBIS_CAMERA_ERROR_NOT_OPEN;
+    }
+
+    if (IsVrCameraActive()) {
+        *config = GetVrCameraConfig();
+        return ORBIS_OK;
     }
 
     // Set default config
@@ -149,6 +155,11 @@ s32 PS4_SYSV_ABI sceCameraGetExposureGain(s32 handle, OrbisCameraChannel channel
     }
     if (!g_library_opened) {
         return ORBIS_CAMERA_ERROR_NOT_OPEN;
+    }
+
+    if (IsVrCameraActive()) {
+        *exposure_gain = GetVrCameraExposure(channel);
+        return ORBIS_OK;
     }
 
     // Return default parameters
@@ -299,6 +310,11 @@ s32 PS4_SYSV_ABI sceCameraGetWhiteBalance(s32 handle, OrbisCameraChannel channel
         return ORBIS_CAMERA_ERROR_NOT_OPEN;
     }
 
+    if (IsVrCameraActive()) {
+        *white_balance = GetVrCameraWhiteBalance(channel);
+        return ORBIS_OK;
+    }
+
     // Set default parameters
     white_balance->whiteBalanceControl = 0;
     white_balance->gainRed = 768;
@@ -347,7 +363,8 @@ s32 PS4_SYSV_ABI sceCameraSetAutoExposureGain(s32 handle, OrbisCameraChannel cha
         return ORBIS_CAMERA_ERROR_NOT_OPEN;
     }
 
-    return ORBIS_CAMERA_ERROR_NOT_CONNECTED;
+    return IsVrCameraActive() ? SetVrCameraAutoExposure(channel, enable)
+                              : ORBIS_CAMERA_ERROR_NOT_CONNECTED;
 }
 
 s32 PS4_SYSV_ABI sceCameraSetAutoWhiteBalance(s32 handle, OrbisCameraChannel channel, u32 enable,
@@ -361,6 +378,10 @@ s32 PS4_SYSV_ABI sceCameraSetAutoWhiteBalance(s32 handle, OrbisCameraChannel cha
         return ORBIS_CAMERA_ERROR_NOT_OPEN;
     }
 
+    if (IsVrCameraActive()) {
+        SetVrCameraAutoWhiteBalance(channel, enable);
+        return ORBIS_OK;
+    }
     return ORBIS_CAMERA_ERROR_NOT_CONNECTED;
 }
 
@@ -379,36 +400,43 @@ s32 PS4_SYSV_ABI sceCameraSetConfig(s32 handle, OrbisCameraConfig* config) {
         LOG_ERROR(Lib_Camera, "ORBIS_CAMERA_ERROR_NOT_OPEN");
         return ORBIS_CAMERA_ERROR_NOT_OPEN;
     }
-    if (EmulatorSettings.GetCameraId() == -1) {
+    if (EmulatorSettings.GetCameraId() == -1 && !IsVrCameraActive()) {
         LOG_ERROR(Lib_Camera, "ORBIS_CAMERA_ERROR_NOT_CONNECTED");
         return ORBIS_CAMERA_ERROR_NOT_CONNECTED;
     }
 
+    auto first = output_config0;
+    auto second = output_config1;
     switch (config->configType) {
     case ORBIS_CAMERA_CONFIG_TYPE1:
     case ORBIS_CAMERA_CONFIG_TYPE2:
     case ORBIS_CAMERA_CONFIG_TYPE3:
     case ORBIS_CAMERA_CONFIG_TYPE4:
-        output_config0 = camera_config_types[config->configType - 1][0];
-        output_config1 = camera_config_types[config->configType - 1][1];
+        first = camera_config_types[config->configType - 1][0];
+        second = camera_config_types[config->configType - 1][1];
         break;
     case ORBIS_CAMERA_CONFIG_TYPE5:
         if (g_firmware_version < Common::ElfInfo::FW_450) {
             LOG_ERROR(Lib_Camera, "ORBIS_CAMERA_ERROR_UNKNOWN_CONFIG");
             return ORBIS_CAMERA_ERROR_UNKNOWN_CONFIG;
         }
-        output_config0 = camera_config_types[config->configType - 1][0];
-        output_config1 = camera_config_types[config->configType - 1][1];
+        first = camera_config_types[config->configType - 1][0];
+        second = camera_config_types[config->configType - 1][1];
         break;
     case ORBIS_CAMERA_CONFIG_EXTENTION:
-        output_config0 = config->configExtention[0];
-        output_config1 = config->configExtention[1];
+        first = config->configExtention[0];
+        second = config->configExtention[1];
         break;
     default:
         LOG_ERROR(Lib_Camera, "Invalid config type {}", std::to_underlying(config->configType));
         return ORBIS_CAMERA_ERROR_PARAM;
     }
 
+    if (IsVrCameraActive()) {
+        return ConfigureVrCamera(first, second);
+    }
+    output_config0 = first;
+    output_config1 = second;
     return ORBIS_OK;
 }
 
@@ -486,10 +514,13 @@ s32 PS4_SYSV_ABI sceCameraSetExposureGain(s32 handle, OrbisCameraChannel channel
     if (!g_library_opened) {
         return ORBIS_CAMERA_ERROR_NOT_OPEN;
     }
-    if (EmulatorSettings.GetCameraId() == -1) {
+    if (EmulatorSettings.GetCameraId() == -1 && !IsVrCameraActive()) {
         return ORBIS_CAMERA_ERROR_NOT_CONNECTED;
     }
 
+    if (IsVrCameraActive()) {
+        SetVrCameraExposure(channel, *exposure_gain);
+    }
     return ORBIS_OK;
 }
 
@@ -642,6 +673,10 @@ s32 PS4_SYSV_ABI sceCameraSetWhiteBalance(s32 handle, OrbisCameraChannel channel
         return ORBIS_CAMERA_ERROR_NOT_OPEN;
     }
 
+    if (IsVrCameraActive()) {
+        SetVrCameraWhiteBalance(channel, *white_balance);
+        return ORBIS_OK;
+    }
     return ORBIS_CAMERA_ERROR_NOT_CONNECTED;
 }
 
