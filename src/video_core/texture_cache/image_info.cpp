@@ -35,8 +35,8 @@ static vk::Format ConvertPixelFormat(const VideoOutFormat format) {
     return {};
 }
 
-ImageInfo::ImageInfo(const Libraries::VideoOut::BufferAttributeGroup& group,
-                     VAddr cpu_address) noexcept {
+ImageInfo::ImageInfo(const Libraries::VideoOut::BufferAttributeGroup& group, VAddr cpu_address,
+                     bool chroma) noexcept {
     const auto& attrib = group.attrib;
     props = ImageProperties{
         .is_tiled = attrib.tiling_mode == TilingMode::Tile,
@@ -44,17 +44,29 @@ ImageInfo::ImageInfo(const Libraries::VideoOut::BufferAttributeGroup& group,
     tile_mode =
         props.is_tiled ? AmdGpu::TileMode::Display2DThin : AmdGpu::TileMode::DisplayLinearAligned;
     array_mode = AmdGpu::GetArrayMode(tile_mode);
-    pixel_format = ConvertPixelFormat(attrib.pixel_format);
+    const bool is_ycbcr = attrib.pixel_format == VideoOutFormat::Ycbcr420Bt709;
+    pixel_format = is_ycbcr ? (chroma ? vk::Format::eR8G8Unorm : vk::Format::eR8Unorm)
+                            : ConvertPixelFormat(attrib.pixel_format);
     num_samples = 1;
     type = AmdGpu::ImageType::Color2D;
     size.width = attrib.width;
     size.height = attrib.height;
     size.depth = 1;
     pitch = attrib.tiling_mode == TilingMode::Linear ? size.width : (size.width + 127) & (~127);
-    num_bits = attrib.pixel_format != VideoOutFormat::A16R16G16B16Float ? 32 : 64;
-    ASSERT(num_bits == 32);
+    num_bits = is_ycbcr ? (chroma ? 16 : 8)
+                        : (attrib.pixel_format != VideoOutFormat::A16R16G16B16Float ? 32 : 64);
+    ASSERT(is_ycbcr || num_bits == 32);
 
     guest_address = cpu_address;
+    if (is_ycbcr) {
+        pitch = attrib.pitch_in_pixel;
+        if (chroma) {
+            guest_address += static_cast<u64>(pitch) * size.height;
+            size.width /= 2;
+            size.height /= 2;
+            pitch /= 2;
+        }
+    }
     UpdateSize();
 }
 

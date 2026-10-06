@@ -7,9 +7,10 @@
 
 #include "core/libraries/videoout/buffer.h"
 #include "imgui/imgui_texture.h"
-#include "video_core/renderer_vulkan/openxr_context.h"
 #include "video_core/renderer_vulkan/host_passes/fsr_pass.h"
 #include "video_core/renderer_vulkan/host_passes/pp_pass.h"
+#include "video_core/renderer_vulkan/host_passes/ycbcr_pass.h"
+#include "video_core/renderer_vulkan/openxr_context.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -87,6 +88,12 @@ public:
         vo_buffers_addr.emplace_back(cpu_address);
         auto desc = VideoCore::TextureCache::ImageDesc{attribute, cpu_address};
         const auto image_id = texture_cache.FindImage(desc);
+        if (attribute.attrib.pixel_format == Libraries::VideoOut::PixelFormat::Ycbcr420Bt709) {
+            desc.info = VideoCore::ImageInfo(attribute, cpu_address, true);
+            vo_buffers_addr.emplace_back(desc.info.guest_address);
+            const auto chroma_id = texture_cache.FindImage(desc);
+            texture_cache.GetImage(chroma_id).usage.vo_surface = 1u;
+        }
         auto& image = texture_cache.GetImage(image_id);
         image.usage.vo_surface = 1u;
         return image;
@@ -121,6 +128,7 @@ private:
     HostPasses::FsrPass::Settings fsr_settings{};
     HostPasses::PostProcessingPass::Settings pp_settings{};
     HostPasses::PostProcessingPass pp_pass;
+    HostPasses::YcbcrPass ycbcr_pass;
     AmdGpu::Liverpool* liverpool;
     Scheduler draw_scheduler;
     Scheduler present_scheduler;
