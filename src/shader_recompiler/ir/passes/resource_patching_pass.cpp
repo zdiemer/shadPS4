@@ -108,6 +108,8 @@ public:
         buffer.used_types |= desc.used_types;
         buffer.is_written |= desc.is_written;
         buffer.is_formatted |= desc.is_formatted;
+        buffer.has_unformatted_access |= desc.has_unformatted_access;
+        buffer.has_format_override |= desc.has_format_override;
         return index;
     }
 
@@ -209,14 +211,18 @@ SharpFetch<T> ConstructSharpFetch(const SharpReference& sharp) {
 void PatchBufferSharp(const ResourceDiscovery& resource, Info& info, Descriptors& descriptors,
                       const Profile& profile) {
     IR::Inst& inst = *resource.user;
+    const bool is_formatted = inst.GetOpcode() == IR::Opcode::LoadBufferFormatF32 ||
+                              inst.GetOpcode() == IR::Opcode::StoreBufferFormatF32;
 
     const u32 buffer_binding = descriptors.Add(BufferResource{
         .sharp_fetch = ConstructSharpFetch<AmdGpu::Buffer>(resource.sharps[0]),
         .used_types = BufferDataType(inst, profile),
         .buffer_type = BufferType::Guest,
         .is_written = IsBufferStore(inst),
-        .is_formatted = inst.GetOpcode() == IR::Opcode::LoadBufferFormatF32 ||
-                        inst.GetOpcode() == IR::Opcode::StoreBufferFormatF32,
+        .is_formatted = is_formatted,
+        .has_unformatted_access = !is_formatted,
+        .has_format_override = is_formatted && inst.Flags<IR::BufferInstInfo>().inst_data_fmt !=
+                                                   AmdGpu::DataFormat::FormatInvalid,
         .post_op = resource.sharps[0].post_op,
         .post_op_dw1_mask = resource.sharps[0].post_op_data.dw1_mask,
     });
