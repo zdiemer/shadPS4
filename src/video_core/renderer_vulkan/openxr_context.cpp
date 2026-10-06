@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <ranges>
 #include <string_view>
 #include <vector>
@@ -16,6 +17,14 @@
 
 #ifdef ENABLE_OPENXR
 #define XR_USE_GRAPHICS_API_VULKAN
+#ifdef _WIN32
+#define XR_USE_PLATFORM_WIN32
+#include <unknwn.h>
+#include <windows.h>
+#else
+#define XR_USE_TIMESPEC
+#include <time.h>
+#endif
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 #endif
@@ -84,8 +93,17 @@ struct OpenXRContext::Impl {
     PFN_xrGetVulkanGraphicsDeviceKHR get_graphics_device{};
     std::vector<std::string> instance_extensions;
     std::vector<std::string> device_extensions;
+#ifdef _WIN32
+    PFN_xrConvertWin32PerformanceCounterToTimeKHR convert_time{};
+#else
+    PFN_xrConvertTimespecTimeToTimeKHR convert_time{};
+#endif
+
+    std::optional<Input::Vr::DeviceState> Locate(std::chrono::steady_clock::time_point time);
+    Input::Vr::DeviceState Locate(XrTime time, Input::Vr::DeviceState state);
 
     ~Impl() {
+        Input::Vr::SetTrackingProvider({});
         Input::Vr::SetDeviceState({});
         if (view_space != XR_NULL_HANDLE) {
             xrDestroySpace(view_space);
@@ -127,19 +145,38 @@ OpenXRContext::OpenXRContext() {
     }
 
     auto context = std::make_unique<Impl>();
-    const char* required_extension = XR_KHR_VULKAN_ENABLE_EXTENSION_NAME;
+    std::vector<const char*> enabled_extensions{XR_KHR_VULKAN_ENABLE_EXTENSION_NAME};
+#ifdef _WIN32
+    const char* time_extension = XR_KHR_WIN32_CONVERT_PERFORMANCE_COUNTER_TIME_EXTENSION_NAME;
+#else
+    const char* time_extension = XR_KHR_CONVERT_TIMESPEC_TIME_EXTENSION_NAME;
+#endif
+    if (std::ranges::any_of(extensions, [time_extension](const auto& extension) {
+            return std::strcmp(extension.extensionName, time_extension) == 0;
+        })) {
+        enabled_extensions.push_back(time_extension);
+    }
     XrInstanceCreateInfo create_info{XR_TYPE_INSTANCE_CREATE_INFO};
     std::strncpy(create_info.applicationInfo.applicationName, "shadPS4",
                  XR_MAX_APPLICATION_NAME_SIZE - 1);
     std::strncpy(create_info.applicationInfo.engineName, "shadPS4", XR_MAX_ENGINE_NAME_SIZE - 1);
     create_info.applicationInfo.apiVersion = XR_API_VERSION_1_0;
-    create_info.enabledExtensionCount = 1;
-    create_info.enabledExtensionNames = &required_extension;
+    create_info.enabledExtensionCount = static_cast<u32>(enabled_extensions.size());
+    create_info.enabledExtensionNames = enabled_extensions.data();
     const XrResult instance_result = xrCreateInstance(&create_info, &context->instance);
     if (XR_FAILED(instance_result)) {
         LOG_WARNING(Render_Vulkan, "Failed to create OpenXR instance: {}",
                     static_cast<s32>(instance_result));
         return;
+    }
+    if (enabled_extensions.size() > 1) {
+#ifdef _WIN32
+        context->convert_time = LoadFunction<PFN_xrConvertWin32PerformanceCounterToTimeKHR>(
+            context->instance, "xrConvertWin32PerformanceCounterToTimeKHR");
+#else
+        context->convert_time = LoadFunction<PFN_xrConvertTimespecTimeToTimeKHR>(
+            context->instance, "xrConvertTimespecTimeToTimeKHR");
+#endif
     }
 
     XrSystemGetInfo system_info{XR_TYPE_SYSTEM_GET_INFO};
@@ -263,8 +300,105 @@ bool OpenXRContext::CreateSession(VkInstance instance, VkPhysicalDevice physical
         return false;
     }
     Input::Vr::SetDeviceState({.connected = true});
+    if (impl->convert_time) {
+        Input::Vr::SetTrackingProvider(
+            [context = impl.get()](auto time) { return context->Locate(time); });
+    } else {
+        LOG_WARNING(Render_Vulkan, "OpenXR runtime has no host clock conversion extension");
+    }
     LOG_INFO(Render_Vulkan, "OpenXR Vulkan session created");
     return true;
+}
+
+std::optional<Input::Vr::DeviceState> OpenXRContext::Impl::Locate(
+    std::chrono::steady_clock::time_point time) {
+    const auto snapshot = Input::Vr::GetDeviceState();
+    if (!snapshot.connected || !snapshot.session_running || !convert_time) {
+        return std::nullopt;
+    }
+    XrTime xr_time{};
+#ifdef _WIN32
+    LARGE_INTEGER counter{};
+    QueryPerformanceCounter(&counter);
+    const auto now = std::chrono::steady_clock::now();
+    if (XR_FAILED(convert_time(instance, &counter, &xr_time))) {
+        return std::nullopt;
+    }
+#else
+    timespec counter{};
+    if (clock_gettime(CLOCK_MONOTONIC, &counter) != 0) {
+        return std::nullopt;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (XR_FAILED(convert_time(instance, &counter, &xr_time))) {
+        return std::nullopt;
+    }
+#endif
+    const auto offset = std::chrono::duration_cast<std::chrono::nanoseconds>(time - now).count();
+    if (xr_time <= 0 || offset <= -xr_time ||
+        offset > std::numeric_limits<XrTime>::max() - xr_time) {
+        return std::nullopt;
+    }
+    xr_time += offset;
+    return Locate(xr_time, {
+                               .connected = snapshot.connected,
+                               .session_running = snapshot.session_running,
+                               .mounted = snapshot.mounted,
+                               .sample_time = time,
+                           });
+}
+
+Input::Vr::DeviceState OpenXRContext::Impl::Locate(XrTime time, Input::Vr::DeviceState state) {
+    XrSpaceVelocity velocity{XR_TYPE_SPACE_VELOCITY};
+    XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
+    location.next = &velocity;
+    if (XR_SUCCEEDED(xrLocateSpace(view_space, local_space, time, &location))) {
+        state.orientation_valid =
+            (location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0;
+        state.position_valid = (location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0;
+        state.orientation_tracked =
+            (location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT) != 0;
+        state.position_tracked =
+            (location.locationFlags & XR_SPACE_LOCATION_POSITION_TRACKED_BIT) != 0;
+        if (state.orientation_valid) {
+            state.head_pose.orientation = ConvertPose(location.pose).orientation;
+        }
+        if (state.position_valid) {
+            state.head_pose.position = ConvertPose(location.pose).position;
+        }
+        state.linear_velocity_valid =
+            (velocity.velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT) != 0;
+        state.angular_velocity_valid =
+            (velocity.velocityFlags & XR_SPACE_VELOCITY_ANGULAR_VALID_BIT) != 0;
+        if (state.linear_velocity_valid) {
+            state.linear_velocity = {velocity.linearVelocity.x, velocity.linearVelocity.y,
+                                     velocity.linearVelocity.z};
+        }
+        if (state.angular_velocity_valid) {
+            state.angular_velocity = {velocity.angularVelocity.x, velocity.angularVelocity.y,
+                                      velocity.angularVelocity.z};
+        }
+    }
+    XrViewLocateInfo locate_info{XR_TYPE_VIEW_LOCATE_INFO};
+    locate_info.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+    locate_info.displayTime = time;
+    locate_info.space = local_space;
+    XrViewState view_state{XR_TYPE_VIEW_STATE};
+    std::array<XrView, 2> views{XrView{XR_TYPE_VIEW}, XrView{XR_TYPE_VIEW}};
+    u32 view_count = 0;
+    if (XR_SUCCEEDED(xrLocateViews(session, &locate_info, &view_state,
+                                   static_cast<u32>(views.size()), &view_count, views.data())) &&
+        view_count == views.size() &&
+        (view_state.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) != 0 &&
+        (view_state.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) != 0) {
+        state.eyes_valid = true;
+        for (size_t eye = 0; eye < views.size(); ++eye) {
+            state.eye_poses[eye] = ConvertPose(views[eye].pose);
+            const auto& fov = views[eye].fov;
+            state.field_of_view[eye] = {fov.angleLeft, fov.angleRight, fov.angleUp, fov.angleDown};
+        }
+    }
+    return state;
 }
 
 void OpenXRContext::Update() {
@@ -325,54 +459,8 @@ void OpenXRContext::Update() {
         .mounted = impl->session_state == XR_SESSION_STATE_FOCUSED,
         .sample_time = std::chrono::steady_clock::now(),
     };
-    XrSpaceVelocity velocity{XR_TYPE_SPACE_VELOCITY};
-    XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
-    location.next = &velocity;
-    if (XR_SUCCEEDED(xrLocateSpace(impl->view_space, impl->local_space,
-                                   frame_state.predictedDisplayTime, &location))) {
-        state.orientation_valid =
-            (location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0;
-        state.position_valid = (location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0;
-        state.orientation_tracked =
-            (location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT) != 0;
-        state.position_tracked =
-            (location.locationFlags & XR_SPACE_LOCATION_POSITION_TRACKED_BIT) != 0;
-        if (state.orientation_valid) {
-            state.head_pose.orientation = ConvertPose(location.pose).orientation;
-        }
-        if (state.position_valid) {
-            state.head_pose.position = ConvertPose(location.pose).position;
-        }
-        state.linear_velocity_valid =
-            (velocity.velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT) != 0;
-        state.angular_velocity_valid =
-            (velocity.velocityFlags & XR_SPACE_VELOCITY_ANGULAR_VALID_BIT) != 0;
-        if (state.linear_velocity_valid) {
-            state.linear_velocity = {velocity.linearVelocity.x, velocity.linearVelocity.y,
-                                     velocity.linearVelocity.z};
-        }
-        if (state.angular_velocity_valid) {
-            state.angular_velocity = {velocity.angularVelocity.x, velocity.angularVelocity.y,
-                                      velocity.angularVelocity.z};
-        }
-    }
-    XrViewLocateInfo locate_info{XR_TYPE_VIEW_LOCATE_INFO};
-    locate_info.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-    locate_info.displayTime = frame_state.predictedDisplayTime;
-    locate_info.space = impl->local_space;
-    XrViewState view_state{XR_TYPE_VIEW_STATE};
-    std::array<XrView, 2> views{XrView{XR_TYPE_VIEW}, XrView{XR_TYPE_VIEW}};
-    u32 view_count = 0;
-    if (XR_SUCCEEDED(xrLocateViews(impl->session, &locate_info, &view_state,
-                                   static_cast<u32>(views.size()), &view_count, views.data())) &&
-        view_count == views.size() &&
-        (view_state.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) != 0 &&
-        (view_state.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) != 0) {
-        for (size_t eye = 0; eye < views.size(); ++eye) {
-            state.eye_poses[eye] = ConvertPose(views[eye].pose);
-            const auto& fov = views[eye].fov;
-            state.field_of_view[eye] = {fov.angleLeft, fov.angleRight, fov.angleUp, fov.angleDown};
-        }
+    if (const auto current = impl->Locate(state.sample_time)) {
+        state = *current;
     }
     Input::Vr::SetDeviceState(state);
     XrFrameEndInfo end_info{XR_TYPE_FRAME_END_INFO};
