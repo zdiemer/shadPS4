@@ -491,6 +491,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
         static_cast<float>(EmulatorSettings.GetRcasAttenuation() / 1000.f);
 
     fsr_pass.Create(device, instance.GetAllocator(), num_images);
+    ycbcr_pass.Create(device, instance.GetAllocator(), num_images);
     pp_pass.Create(device, swapchain.GetSurfaceFormat().format);
 
     if (openxr->IsAvailable()) {
@@ -655,6 +656,8 @@ Frame* Presenter::PrepareLastFrame() {
 
 static vk::Format GetFrameViewFormat(const Libraries::VideoOut::PixelFormat format) {
     switch (format) {
+    case Libraries::VideoOut::PixelFormat::Ycbcr420Bt709:
+        return vk::Format::eR8Unorm;
     case Libraries::VideoOut::PixelFormat::A8B8G8R8Srgb:
         return vk::Format::eR8G8B8A8Srgb;
     case Libraries::VideoOut::PixelFormat::A8R8G8B8Srgb:
@@ -675,6 +678,17 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     auto desc = VideoCore::TextureCache::ImageDesc{attribute, cpu_address};
     const auto image_id = texture_cache.FindImage(desc);
     texture_cache.UpdateImage(image_id);
+    const bool is_ycbcr =
+        attribute.attrib.pixel_format == Libraries::VideoOut::PixelFormat::Ycbcr420Bt709;
+    VideoCore::ImageId chroma_id{};
+    if (is_ycbcr) {
+        desc.info = VideoCore::ImageInfo(attribute, cpu_address, true);
+        chroma_id = texture_cache.FindImage(desc);
+        texture_cache.UpdateImage(chroma_id);
+        if (ycbcr_pass.NeedsResize({attribute.attrib.width, attribute.attrib.height})) {
+            draw_scheduler.Finish();
+        }
+    }
 
     Frame* frame = GetRenderFrame();
 
@@ -714,6 +728,21 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     const vk::Extent2D image_size = {image.info.size.width, image.info.size.height};
     expected_ratio = static_cast<float>(image_size.width) / static_cast<float>(image_size.height);
 
+    if (is_ycbcr) {
+        auto& chroma = texture_cache.GetImage(chroma_id);
+        VideoCore::ImageViewInfo chroma_view_info{};
+        chroma_view_info.format = vk::Format::eR8G8Unorm;
+        const auto chroma_view = *chroma.FindView(chroma_view_info).image_view;
+        runtime.Transit(&image, vk::ImageLayout::eShaderReadOnlyOptimal,
+                        vk::PipelineStageFlagBits2::eComputeShader,
+                        vk::AccessFlagBits2::eShaderRead);
+        runtime.Transit(&chroma, vk::ImageLayout::eShaderReadOnlyOptimal,
+                        vk::PipelineStageFlagBits2::eComputeShader,
+                        vk::AccessFlagBits2::eShaderRead);
+        runtime.FlushBarriers();
+        image_view = ycbcr_pass.Render(cmdbuf, image_view, chroma_view, image_size);
+    }
+
     const u32 capture_game_only_count = VideoCore::ConsumeGameOnlyScreenshotRequests();
     std::optional<ScreenshotReadback> pending_screenshot;
 
@@ -724,7 +753,8 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
         auto& readback = pending_screenshot.emplace(
             instance, ScreenshotKind::GameOnly,
             BuildScreenshotPaths(ScreenshotKind::GameOnly, capture_game_only_count),
-            image_size.width, image_size.height, view_info.format, hdr_encoded);
+            image_size.width, image_size.height,
+            is_ycbcr ? vk::Format::eR8G8B8A8Srgb : view_info.format, hdr_encoded);
         const vk::BufferImageCopy copy_region = {
             .bufferOffset = 0,
             .bufferRowLength = 0,
@@ -738,14 +768,43 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
             .imageOffset = {0, 0, 0},
             .imageExtent = {readback.width, readback.height, 1},
         };
-        runtime.DownloadImage(&image, &readback.buffer, std::span{&copy_region, 1});
+        if (is_ycbcr) {
+            vk::ImageMemoryBarrier2 barrier{
+                .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+                .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+                .dstStageMask = vk::PipelineStageFlagBits2::eCopy,
+                .dstAccessMask = vk::AccessFlagBits2::eTransferRead,
+                .oldLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                .newLayout = vk::ImageLayout::eTransferSrcOptimal,
+                .image = ycbcr_pass.GetImage(),
+                .subresourceRange = frame_subresources,
+            };
+            cmdbuf.pipelineBarrier2(
+                {.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier});
+            CopyImageToReadback(cmdbuf, barrier.image, barrier.newLayout, readback);
+            runtime.AccessBuffer(&readback.buffer, 0, readback.buffer.mapped_data.size(),
+                                 vk::PipelineStageFlagBits2::eCopy,
+                                 vk::AccessFlagBits2::eTransferWrite);
+            barrier.srcStageMask = vk::PipelineStageFlagBits2::eCopy;
+            barrier.srcAccessMask = vk::AccessFlagBits2::eTransferRead;
+            barrier.dstStageMask = vk::PipelineStageFlagBits2::eAllCommands;
+            barrier.dstAccessMask = vk::AccessFlagBits2::eShaderRead;
+            std::swap(barrier.oldLayout, barrier.newLayout);
+            cmdbuf.pipelineBarrier2(
+                {.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier});
+        } else {
+            runtime.DownloadImage(&image, &readback.buffer, std::span{&copy_region, 1});
+        }
     }
 
     // Continue with host-side passes that draw the displayed (scaled) frame.
 
-    runtime.Transit(&image, vk::ImageLayout::eShaderReadOnlyOptimal,
-                    vk::PipelineStageFlagBits2::eFragmentShader, vk::AccessFlagBits2::eShaderRead);
-    runtime.FlushBarriers();
+    if (!is_ycbcr) {
+        runtime.Transit(&image, vk::ImageLayout::eShaderReadOnlyOptimal,
+                        vk::PipelineStageFlagBits2::eFragmentShader,
+                        vk::AccessFlagBits2::eShaderRead);
+        runtime.FlushBarriers();
+    }
 
     image_view = fsr_pass.Render(cmdbuf, image_view, image_size, {frame->width, frame->height},
                                  fsr_settings, frame->is_hdr);

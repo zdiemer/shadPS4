@@ -117,13 +117,24 @@ VideoOutPort* VideoOutDriver::GetPort(int handle) {
 
 int VideoOutDriver::RegisterBuffers(VideoOutPort* port, s32 startIndex, void* const* addresses,
                                     s32 bufferNum, const BufferAttribute* attribute) {
-    if (!Is32BppPixelFormat(attribute->pixel_format)) {
+    const bool is_ycbcr = attribute->pixel_format == PixelFormat::Ycbcr420Bt709;
+    if (!Is32BppPixelFormat(attribute->pixel_format) && !is_ycbcr) {
         LOG_ERROR(Lib_VideoOut,
                   "Unsupported pixel format = {:#x}, width = {}, height = {}, pitch = {}, "
                   "tiling = {}",
                   static_cast<u32>(attribute->pixel_format), attribute->width, attribute->height,
                   attribute->pitch_in_pixel, static_cast<s32>(attribute->tiling_mode));
         return ORBIS_VIDEO_OUT_ERROR_INVALID_PIXEL_FORMAT;
+    }
+    if (is_ycbcr && attribute->tiling_mode != TilingMode::Linear) {
+        return ORBIS_VIDEO_OUT_ERROR_INVALID_TILING_MODE;
+    }
+    if (is_ycbcr && (attribute->width == 0 || attribute->height == 0 ||
+                     (attribute->width | attribute->height) % 2 != 0)) {
+        return ORBIS_VIDEO_OUT_ERROR_INVALID_RESOLUTION;
+    }
+    if (is_ycbcr && attribute->pitch_in_pixel % 64 != 0) {
+        return ORBIS_VIDEO_OUT_ERROR_INVALID_PITCH;
     }
     const s32 group_index = port->FindFreeGroup();
     if (group_index >= MaxDisplayBufferGroups) {

@@ -38,7 +38,8 @@ struct ImageProperties {
 
 struct ImageInfo {
     ImageInfo() = default;
-    ImageInfo(const Libraries::VideoOut::BufferAttributeGroup& group, VAddr cpu_address) noexcept;
+    ImageInfo(const Libraries::VideoOut::BufferAttributeGroup& group, VAddr cpu_address,
+              bool chroma = false) noexcept;
     ImageInfo(const AmdGpu::ColorBuffer& buffer, AmdGpu::CbDbExtent hint) noexcept;
     ImageInfo(const AmdGpu::DepthBuffer& buffer, u32 num_slices, VAddr htile_address,
               AmdGpu::CbDbExtent hint, bool write_buffer = false) noexcept;
