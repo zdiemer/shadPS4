@@ -19,11 +19,14 @@ VK_DEFINE_HANDLE(VmaAllocator)
 
 namespace Vulkan {
 
+class OpenXRContext;
+
 class Instance {
 public:
     explicit Instance(bool validation = false, bool crash_diagnostic = false);
     explicit Instance(Frontend::WindowSDL& window, s32 physical_device_index,
-                      bool enable_validation = false, bool enable_crash_diagnostic = false);
+                      bool enable_validation = false, bool enable_crash_diagnostic = false,
+                      OpenXRContext* openxr_context = nullptr);
     ~Instance();
 
     /// Returns a formatted string for the driver version
@@ -486,6 +489,7 @@ private:
     [[nodiscard]] vk::FormatFeatureFlags2 GetFormatFeatureFlags(vk::Format format) const;
 
 private:
+    OpenXRContext* openxr_context{};
     vk::UniqueInstance instance;
     vk::PhysicalDevice physical_device;
     vk::UniqueDevice device;

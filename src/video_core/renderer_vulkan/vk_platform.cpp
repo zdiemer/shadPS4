@@ -255,7 +255,8 @@ std::vector<const char*> GetInstanceLayers(bool enable_validation, bool enable_c
 }
 
 vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool enable_validation,
-                                  bool enable_crash_diagnostic) {
+                                  bool enable_crash_diagnostic,
+                                  std::span<const std::string> additional_extensions) {
     LOG_INFO(Render_Vulkan, "Creating vulkan instance");
 
 #if defined(__APPLE__)
@@ -286,14 +287,19 @@ vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool e
                VK_VERSION_MAJOR(available_version), VK_VERSION_MINOR(available_version));
 
     const auto layers = GetInstanceLayers(enable_validation, enable_crash_diagnostic);
-    const auto extensions = GetLayerExtensions(GetInstanceExtensions(window_type, true), layers);
+    auto extensions = GetLayerExtensions(GetInstanceExtensions(window_type, true), layers);
+    for (const auto& name : additional_extensions) {
+        if (std::ranges::none_of(extensions, [&](const char* existing) { return name == existing; })) {
+            extensions.push_back(name.c_str());
+        }
+    }
 
     const vk::ApplicationInfo application_info = {
         .pApplicationName = "shadPS4",
         .applicationVersion = VK_MAKE_VERSION(1, 0, 0),
         .pEngineName = "shadPS4 Vulkan",
         .engineVersion = VK_MAKE_VERSION(1, 0, 0),
-        .apiVersion = available_version,
+        .apiVersion = additional_extensions.empty() ? available_version : TargetVulkanApiVersion,
     };
 
     const std::string extensions_string = fmt::format("{}", fmt::join(extensions, ", "));

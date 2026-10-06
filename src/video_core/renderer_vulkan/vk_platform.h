@@ -3,6 +3,9 @@
 
 #pragma once
 
+#include <span>
+#include <string>
+
 #include <fmt/format.h>
 
 #include "common/assert.h"
@@ -23,7 +26,8 @@ constexpr u32 TargetVulkanApiVersion = VK_API_VERSION_1_3;
 vk::SurfaceKHR CreateSurface(vk::Instance instance, const Frontend::WindowSDL& emu_window);
 
 vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool enable_validation,
-                                  bool enable_crash_diagnostic);
+                                  bool enable_crash_diagnostic,
+                                  std::span<const std::string> additional_extensions = {});
 
 vk::UniqueDebugUtilsMessengerEXT CreateDebugCallback(vk::Instance instance);
 
