@@ -17,6 +17,10 @@ static s32 g_firmware_version = 0;
 static s32 g_internal_handle = 0;
 static Libraries::UserService::OrbisUserServiceUserId g_user_id = -1;
 
+void BindDeviceToUser(Libraries::UserService::OrbisUserServiceUserId user_id) {
+    g_user_id = user_id;
+}
+
 static OrbisHmdDeviceStatus GetDeviceStatus(const Input::Vr::DeviceState& state) {
     if (!state.connected) {
         return ORBIS_HMD_DEVICE_STATUS_NOT_DETECTED;
@@ -34,6 +38,8 @@ static void FillDeviceInformation(OrbisHmdDeviceInformation& info) {
         info.device_info.panel_resolution = {1920, 1080};
         info.hmu_mount = state.mounted;
     }
+    LOG_DEBUG(Lib_Hmd, "status = {}, user_id = {}, mounted = {}", static_cast<u32>(info.status),
+              info.user_id, info.hmu_mount);
 }
 
 s32 PS4_SYSV_ABI sceHmdInitialize(const OrbisHmdInitializeParam* param) {

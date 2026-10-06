@@ -4,11 +4,15 @@
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "core/libraries/error_codes.h"
+#include "core/libraries/hmd/hmd.h"
 #include "core/libraries/hmd/hmd_setup_dialog.h"
 #include "core/libraries/libs.h"
 #include "input/vr_state.h"
 
 namespace Libraries::HmdSetupDialog {
+
+static Libraries::UserService::OrbisUserServiceUserId g_setup_user_id =
+    Libraries::UserService::ORBIS_USER_SERVICE_USER_ID_INVALID;
 
 s32 PS4_SYSV_ABI sceHmdSetupDialogInitialize() {
     LOG_ERROR(Lib_HmdSetupDialog, "(STUBBED) called");
@@ -21,8 +25,16 @@ s32 PS4_SYSV_ABI sceHmdSetupDialogClose() {
 }
 
 s32 PS4_SYSV_ABI sceHmdSetupDialogOpen(const OrbisHmdSetupDialogParam* param) {
-    LOG_ERROR(Lib_HmdSetupDialog, "(STUBBED) called");
-    // On real hardware, a dialog would show up telling the user to connect a PSVR headset.
+    if (param == nullptr) {
+        return static_cast<s32>(Libraries::CommonDialog::Error::ARG_NULL);
+    }
+    if (param->size != sizeof(OrbisHmdSetupDialogParam) ||
+        param->user_id == Libraries::UserService::ORBIS_USER_SERVICE_USER_ID_INVALID ||
+        param->user_id == Libraries::UserService::ORBIS_USER_SERVICE_USER_ID_SYSTEM) {
+        return static_cast<s32>(Libraries::CommonDialog::Error::PARAM_INVALID);
+    }
+    LOG_DEBUG(Lib_HmdSetupDialog, "user_id = {}, size = {}", param->user_id, param->size);
+    g_setup_user_id = param->user_id;
     return ORBIS_OK;
 }
 
@@ -33,9 +45,13 @@ s32 PS4_SYSV_ABI sceHmdSetupDialogGetResult(OrbisHmdSetupDialogResult* result) {
     }
     *result = {};
     const auto state = Input::Vr::GetDeviceState();
-    result->result = state.connected && state.session_running
-                         ? Libraries::CommonDialog::Result::OK
-                         : Libraries::CommonDialog::Result::USER_CANCELED;
+    if (state.connected && state.session_running &&
+        g_setup_user_id != Libraries::UserService::ORBIS_USER_SERVICE_USER_ID_INVALID) {
+        Hmd::BindDeviceToUser(g_setup_user_id);
+        result->result = Libraries::CommonDialog::Result::OK;
+    } else {
+        result->result = Libraries::CommonDialog::Result::USER_CANCELED;
+    }
     return ORBIS_OK;
 }
 
@@ -51,6 +67,7 @@ Libraries::CommonDialog::Status PS4_SYSV_ABI sceHmdSetupDialogGetStatus() {
 
 s32 PS4_SYSV_ABI sceHmdSetupDialogTerminate() {
     LOG_ERROR(Lib_HmdSetupDialog, "(STUBBED) called");
+    g_setup_user_id = Libraries::UserService::ORBIS_USER_SERVICE_USER_ID_INVALID;
     return ORBIS_OK;
 }
 
