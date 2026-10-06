@@ -11,6 +11,7 @@
 #include "imgui/renderer/imgui_core.h"
 #include "sdl_window.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
+#include "video_core/renderer_vulkan/openxr_context.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 
@@ -94,9 +95,13 @@ Instance::Instance(bool enable_validation, bool enable_crash_diagnostic)
       physical_devices{EnumeratePhysicalDevices(instance)} {}
 
 Instance::Instance(Frontend::WindowSDL& window, s32 physical_device_index,
-                   bool enable_validation /*= false*/, bool enable_crash_diagnostic /*= false*/)
-    : instance{CreateInstance(window.GetWindowInfo().type, enable_validation,
-                              enable_crash_diagnostic)},
+                   bool enable_validation /*= false*/, bool enable_crash_diagnostic /*= false*/,
+                   OpenXRContext* openxr_context_ /*= nullptr*/)
+    : openxr_context{openxr_context_},
+      instance{CreateInstance(window.GetWindowInfo().type, enable_validation,
+                              enable_crash_diagnostic,
+                              openxr_context ? openxr_context->GetInstanceExtensions()
+                                             : std::span<const std::string>{})},
       physical_devices{EnumeratePhysicalDevices(instance)} {
     if (enable_validation) {
         debug_callback = CreateDebugCallback(*instance);
@@ -159,6 +164,13 @@ Instance::Instance(Frontend::WindowSDL& window, s32 physical_device_index,
                    physical_device_index, num_physical_devices);
 
         physical_device = physical_devices[physical_device_index];
+    }
+
+    if (openxr_context && openxr_context->IsAvailable()) {
+        const VkPhysicalDevice xr_device = openxr_context->GetGraphicsDevice(*instance);
+        if (xr_device != VK_NULL_HANDLE) {
+            physical_device = xr_device;
+        }
     }
 
     available_extensions = GetSupportedExtensions(physical_device);
@@ -228,8 +240,13 @@ bool Instance::CreateDevice() {
         return false;
     }
 
-    boost::container::static_vector<const char*, 32> enabled_extensions;
+    boost::container::static_vector<const char*, 64> enabled_extensions;
     const auto add_extension = [&](std::string_view extension) -> bool {
+        if (std::ranges::find_if(enabled_extensions, [&](const char* name) {
+                return extension == name;
+            }) != enabled_extensions.end()) {
+            return true;
+        }
         const auto result =
             std::find_if(available_extensions.begin(), available_extensions.end(),
                          [&](const std::string& name) { return name == extension; });
@@ -254,6 +271,13 @@ bool Instance::CreateDevice() {
                VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
     ASSERT_MSG(add_extension(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME),
                "Required Vulkan extension unavailable: {}", VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
+
+    if (openxr_context && openxr_context->IsAvailable()) {
+        for (const auto& extension : openxr_context->GetDeviceExtensions()) {
+            ASSERT_MSG(add_extension(extension), "Required OpenXR Vulkan extension unavailable: {}",
+                       extension);
+        }
+    }
 
     const auto robustness2_features = feature_chain.get<vk::PhysicalDeviceRobustness2FeaturesEXT>();
     ASSERT_MSG(robustness2_features.robustBufferAccess2,

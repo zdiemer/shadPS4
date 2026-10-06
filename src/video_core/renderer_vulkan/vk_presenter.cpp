@@ -463,9 +463,10 @@ static void SavePendingScreenshot(const ScreenshotReadback& readback) {
 }
 
 Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_)
-    : window{window_}, liverpool{liverpool_},
+    : window{window_}, openxr{std::make_unique<OpenXRContext>()},
       instance{window, EmulatorSettings.GetGpuId(), EmulatorSettings.IsVkValidationEnabled(),
-               EmulatorSettings.IsVkCrashDiagnosticEnabled()},
+               EmulatorSettings.IsVkCrashDiagnosticEnabled(), openxr.get()},
+      liverpool{liverpool_},
       draw_scheduler{instance}, present_scheduler{instance}, flip_scheduler{instance},
       swapchain{instance, window}, runtime{instance, draw_scheduler},
       rasterizer{std::make_unique<Rasterizer>(instance, draw_scheduler, runtime, liverpool)},
@@ -492,6 +493,11 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     fsr_pass.Create(device, instance.GetAllocator(), num_images);
     pp_pass.Create(device, swapchain.GetSurfaceFormat().format);
 
+    if (openxr->IsAvailable()) {
+        openxr->CreateSession(instance.GetInstance(), instance.GetPhysicalDevice(), device,
+                              instance.GetGraphicsQueueFamilyIndex());
+    }
+
     ImGui::Layer::AddLayer(Common::Singleton<Core::Devtools::Layer>::Instance());
     ImGui::Friends::Register();
     ImGui::ShadNetNotify::Register();
@@ -517,6 +523,7 @@ Presenter::~Presenter() {
         device.destroyImageView(frame.image_view);
         device.destroyFence(frame.present_done);
     }
+    openxr.reset();
 }
 
 bool Presenter::IsVideoOutSurface(const AmdGpu::ColorBuffer& color_buffer) const {
@@ -841,6 +848,7 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
 }
 
 void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame) {
+    openxr->Update();
     // Free the frame for reuse
     const auto free_frame = [&] {
         if (!is_reusing_frame) {
