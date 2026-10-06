@@ -11,6 +11,8 @@ namespace {
 
 std::mutex g_mutex;
 DeviceState g_state;
+std::mutex g_provider_mutex;
+TrackingProvider g_provider;
 
 } // namespace
 
@@ -22,6 +24,16 @@ DeviceState GetDeviceState() {
 void SetDeviceState(const DeviceState& state) {
     std::scoped_lock lock{g_mutex};
     g_state = state;
+}
+
+std::optional<DeviceState> LocateDevice(std::chrono::steady_clock::time_point time) {
+    std::scoped_lock lock{g_provider_mutex};
+    return g_provider ? g_provider(time) : std::nullopt;
+}
+
+void SetTrackingProvider(TrackingProvider provider) {
+    std::scoped_lock lock{g_provider_mutex};
+    g_provider = std::move(provider);
 }
 
 } // namespace Input::Vr

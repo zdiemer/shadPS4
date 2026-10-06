@@ -381,6 +381,11 @@ struct OrbisVrTrackerPlayAreaWarningInfo {
     u32 reserved4[5];
 };
 
+static_assert(sizeof(OrbisVrTrackerGetResultParam) == 56);
+static_assert(sizeof(OrbisVrTrackerResultData) == 1520);
+static_assert(offsetof(OrbisVrTrackerResultData, hmd_info) == 128);
+static_assert(offsetof(OrbisVrTrackerHmdInfo, sensor_read_system_timestamp) == 272);
+
 s32 PS4_SYSV_ABI sceVrTrackerQueryMemory(const OrbisVrTrackerQueryMemoryParam* param,
                                          OrbisVrTrackerQueryMemoryResult* result);
 s32 PS4_SYSV_ABI sceVrTrackerInit(const OrbisVrTrackerInitParam* param);

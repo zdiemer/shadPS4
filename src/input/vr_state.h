@@ -5,6 +5,8 @@
 
 #include <array>
 #include <chrono>
+#include <functional>
+#include <optional>
 
 namespace Input::Vr {
 
@@ -28,6 +30,7 @@ struct DeviceState {
     bool position_valid{};
     bool orientation_tracked{};
     bool position_tracked{};
+    bool eyes_valid{};
     Pose head_pose{};
     std::array<Pose, 2> eye_poses{};
     std::array<FieldOfView, 2> field_of_view{};
@@ -40,5 +43,9 @@ struct DeviceState {
 
 DeviceState GetDeviceState();
 void SetDeviceState(const DeviceState& state);
+using TrackingProvider =
+    std::function<std::optional<DeviceState>(std::chrono::steady_clock::time_point)>;
+std::optional<DeviceState> LocateDevice(std::chrono::steady_clock::time_point time);
+void SetTrackingProvider(TrackingProvider provider);
 
 } // namespace Input::Vr
