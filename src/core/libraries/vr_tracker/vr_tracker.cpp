@@ -12,6 +12,7 @@
 #include "core/libraries/vr_tracker/vr_tracker.h"
 #include "core/libraries/vr_tracker/vr_tracker_error.h"
 #include "core/memory.h"
+#include "input/controller.h"
 #include "input/vr_state.h"
 #include "video_core/amdgpu/liverpool.h"
 
@@ -20,6 +21,7 @@ namespace Libraries::VrTracker {
 static bool g_library_initialized = false;
 static std::mutex g_mutex;
 static std::array<float, 4> g_relative_orientation{0.0f, 0.0f, 0.0f, 1.0f};
+static std::array<float, 4> g_pad_relative_orientation{0.0f, 0.0f, 0.0f, 1.0f};
 
 // Internal memory
 static void* g_garlic_memory_pointer = nullptr;
@@ -35,17 +37,12 @@ static s32 g_move_handle = -1;
 static s32 g_gun_handle = -1;
 static s32 g_hmd_handle = -1;
 
-static OrbisVrTrackerPoseData ConvertPose(const Input::Vr::Pose& pose, bool relative) {
+static OrbisVrTrackerPoseData ConvertPose(
+    const Input::Vr::Pose& pose, bool relative,
+    const std::array<float, 4>& origin = g_relative_orientation) {
     auto orientation = pose.orientation;
     if (relative) {
-        const auto& a = g_relative_orientation;
-        const auto& b = pose.orientation;
-        orientation = {
-            a[3] * b[0] - a[0] * b[3] - a[1] * b[2] + a[2] * b[1],
-            a[3] * b[1] + a[0] * b[2] - a[1] * b[3] - a[2] * b[0],
-            a[3] * b[2] - a[0] * b[1] + a[1] * b[0] - a[2] * b[3],
-            a[3] * b[3] + a[0] * b[0] + a[1] * b[1] + a[2] * b[2],
-        };
+        orientation = Input::Vr::RelativeOrientation(pose.orientation, origin);
     }
     return {
         .position_x = pose.position[0],
@@ -200,6 +197,7 @@ s32 PS4_SYSV_ABI sceVrTrackerInit(const OrbisVrTrackerInitParam* param) {
     LOG_WARNING(Lib_VrTracker, "PSVR camera processing is not implemented");
     g_library_initialized = true;
     g_relative_orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+    g_pad_relative_orientation = {0.0f, 0.0f, 0.0f, 1.0f};
 
     return ORBIS_OK;
 }
@@ -331,6 +329,46 @@ s32 PS4_SYSV_ABI sceVrTrackerGetResult(const OrbisVrTrackerGetResultParam* param
     result->status = ORBIS_VR_TRACKER_STATUS_NOT_TRACKING;
     if (param->handle != g_hmd_handle) {
         result->pad_info.device_pose = ConvertPose({}, false);
+        if (param->handle != g_pad_handle ||
+            Input::GameControllers::GetControllerIndexFromControllerID(param->handle) != 0) {
+            return ORBIS_OK;
+        }
+        const auto state = Input::Vr::LocateDevice(now + std::chrono::microseconds{offset});
+        if (!state) {
+            return ORBIS_OK;
+        }
+        const auto& controller =
+            state->controllers[1].active ? state->controllers[1] : state->controllers[0];
+        result->connected = controller.active;
+        if (!controller.active) {
+            return ORBIS_OK;
+        }
+        if (controller.orientation_valid || controller.position_valid) {
+            result->status = ORBIS_VR_TRACKER_STATUS_TRACKING;
+        }
+        result->position_quality =
+            controller.position_valid
+                ? (controller.position_tracked ? ORBIS_VR_TRACKER_QUALITY_FULL
+                                               : ORBIS_VR_TRACKER_QUALITY_PARTIAL)
+                : ORBIS_VR_TRACKER_QUALITY_NONE;
+        result->orientation_quality =
+            controller.orientation_valid
+                ? (controller.orientation_tracked ? ORBIS_VR_TRACKER_QUALITY_FULL
+                                                  : ORBIS_VR_TRACKER_QUALITY_PARTIAL)
+                : ORBIS_VR_TRACKER_QUALITY_NONE;
+        result->pad_info.device_pose = ConvertPose(
+            controller.grip_pose, param->orientation_type == ORBIS_VR_TRACKER_ORIENTATION_RELATIVE,
+            g_pad_relative_orientation);
+        if (controller.linear_velocity_valid) {
+            result->velocity_x = controller.linear_velocity[0];
+            result->velocity_y = controller.linear_velocity[1];
+            result->velocity_z = controller.linear_velocity[2];
+        }
+        if (controller.angular_velocity_valid) {
+            result->angular_velocity_x = controller.angular_velocity[0];
+            result->angular_velocity_y = controller.angular_velocity[1];
+            result->angular_velocity_z = controller.angular_velocity[2];
+        }
         return ORBIS_OK;
     }
     auto& hmd = result->hmd_info;
@@ -495,17 +533,33 @@ s32 PS4_SYSV_ABI sceVrTrackerResetOrientationRelative(const OrbisVrTrackerDevice
         handle < 0) {
         return ORBIS_VR_TRACKER_ERROR_ARGUMENT_INVALID;
     }
-    if (device_type != ORBIS_VR_TRACKER_DEVICE_HMD) {
+    if (device_type != ORBIS_VR_TRACKER_DEVICE_HMD &&
+        device_type != ORBIS_VR_TRACKER_DEVICE_DUALSHOCK4) {
         return ORBIS_VR_TRACKER_ERROR_NOT_SUPPORTED;
     }
-    if (handle != g_hmd_handle) {
+    if (handle != (device_type == ORBIS_VR_TRACKER_DEVICE_HMD ? g_hmd_handle : g_pad_handle)) {
         return ORBIS_VR_TRACKER_ERROR_DEVICE_NOT_REGISTERED;
     }
     const auto state = Input::Vr::LocateDevice(std::chrono::steady_clock::now());
-    if (!state || !state->orientation_valid) {
+    if (!state) {
         return ORBIS_VR_TRACKER_ERROR_DEVICE_NOT_ORIENTED;
     }
-    g_relative_orientation = state->head_pose.orientation;
+    if (device_type == ORBIS_VR_TRACKER_DEVICE_DUALSHOCK4) {
+        if (Input::GameControllers::GetControllerIndexFromControllerID(handle) != 0) {
+            return ORBIS_VR_TRACKER_ERROR_DEVICE_NOT_ORIENTED;
+        }
+        const auto& controller =
+            state->controllers[1].active ? state->controllers[1] : state->controllers[0];
+        if (!controller.active || !controller.orientation_valid) {
+            return ORBIS_VR_TRACKER_ERROR_DEVICE_NOT_ORIENTED;
+        }
+        g_pad_relative_orientation = controller.grip_pose.orientation;
+    } else {
+        if (!state->orientation_valid) {
+            return ORBIS_VR_TRACKER_ERROR_DEVICE_NOT_ORIENTED;
+        }
+        g_relative_orientation = state->head_pose.orientation;
+    }
     return ORBIS_OK;
 }
 
@@ -639,6 +693,7 @@ s32 PS4_SYSV_ABI sceVrTrackerUnregisterDevice(const s32 handle) {
         g_hmd_handle = -1;
     } else if (handle == g_pad_handle) {
         g_pad_handle = -1;
+        g_pad_relative_orientation = {0.0f, 0.0f, 0.0f, 1.0f};
     } else if (handle == g_move_handle) {
         g_move_handle = -1;
     } else if (handle == g_gun_handle) {
@@ -660,6 +715,7 @@ s32 PS4_SYSV_ABI sceVrTrackerTerm() {
     g_library_initialized = false;
     g_hmd_handle = g_pad_handle = g_move_handle = g_gun_handle = -1;
     g_relative_orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+    g_pad_relative_orientation = {0.0f, 0.0f, 0.0f, 1.0f};
     return ORBIS_OK;
 }
 
