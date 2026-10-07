@@ -3,6 +3,10 @@
 
 #include "fiber.h"
 
+#include <memory>
+#include <mutex>
+#include <unordered_map>
+
 #include "common/elf_info.h"
 #include "common/logging/log.h"
 #include "core/libraries/fiber/fiber_error.h"
@@ -18,6 +22,21 @@ static constexpr u64 kFiberStackSignature = 0x7149f2ca7149f2ca;
 static constexpr u64 kFiberStackSizeCheck = 0xdeadbeefdeadbeef;
 
 static std::atomic<u32> context_size_check = false;
+static std::mutex g_hle_stacks_mutex;
+static std::unordered_map<OrbisFiber*, std::unique_ptr<u8[]>> g_hle_stacks;
+
+void SetHleStack(OrbisFiber* fiber) {
+    constexpr size_t HleStackSize = 128_KB;
+    std::scoped_lock lock{g_hle_stacks_mutex};
+    fiber->hle_stack = nullptr;
+    g_hle_stacks.erase(fiber);
+    if (fiber->addr_context && fiber->size_context < HleStackSize) {
+        auto stack = std::make_unique<u8[]>(HleStackSize + 15);
+        fiber->hle_stack = reinterpret_cast<void*>(
+            (reinterpret_cast<uintptr_t>(stack.get()) + HleStackSize) & ~uintptr_t{15});
+        g_hle_stacks.emplace(fiber, std::move(stack));
+    }
+}
 
 OrbisFiberContext* GetFiberContext() {
     return Core::GetTcbBase()->tcb_fiber;
@@ -61,6 +80,7 @@ s32 PS4_SYSV_ABI _sceFiberAttachContext(OrbisFiber* fiber, void* addr_context, u
     fiber->size_context = size_context;
     fiber->context_start = addr_context;
     fiber->context_end = reinterpret_cast<u8*>(addr_context) + size_context;
+    SetHleStack(fiber);
 
     /* Apply signature to start of stack */
     *(u64*)addr_context = kFiberStackSignature;
@@ -192,6 +212,7 @@ s32 PS4_SYSV_ABI sceFiberInitializeImpl(OrbisFiber* fiber, const char* name, Orb
     fiber->size_context = size_context;
     fiber->context = nullptr;
     fiber->flags = user_flags;
+    SetHleStack(fiber);
 
     /*
         A low stack area is problematic, as we can easily
@@ -254,6 +275,9 @@ s32 PS4_SYSV_ABI sceFiberFinalize(OrbisFiber* fiber) {
         return ORBIS_FIBER_ERROR_STATE;
     }
 
+    std::scoped_lock lock{g_hle_stacks_mutex};
+    g_hle_stacks.erase(fiber);
+    fiber->hle_stack = nullptr;
     return ORBIS_OK;
 }
 
@@ -552,15 +576,16 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("asjUJJ+aa8s", "libSceFiber", 1, "libSceFiber", sceFiberOptParamInitialize);
     LIB_FUNCTION("JeNX5F-NzQU", "libSceFiber", 1, "libSceFiber", sceFiberFinalize);
 
-    LIB_FUNCTION("a0LLrZWac0M", "libSceFiber", 1, "libSceFiber", sceFiberRun);
-    LIB_FUNCTION("PFT2S-tJ7Uk", "libSceFiber", 1, "libSceFiber", sceFiberSwitch);
+    LIB_FUNCTION_GUEST_STACK("a0LLrZWac0M", "libSceFiber", 1, "libSceFiber", sceFiberRun);
+    LIB_FUNCTION_GUEST_STACK("PFT2S-tJ7Uk", "libSceFiber", 1, "libSceFiber", sceFiberSwitch);
     LIB_FUNCTION("p+zLIOg27zU", "libSceFiber", 1, "libSceFiber", sceFiberGetSelf);
-    LIB_FUNCTION("B0ZX2hx9DMw", "libSceFiber", 1, "libSceFiber", sceFiberReturnToThread);
+    LIB_FUNCTION_GUEST_STACK("B0ZX2hx9DMw", "libSceFiber", 1, "libSceFiber",
+                             sceFiberReturnToThread);
 
-    LIB_FUNCTION("avfGJ94g36Q", "libSceFiber", 1, "libSceFiber",
-                 sceFiberRunImpl); // _sceFiberAttachContextAndRun
-    LIB_FUNCTION("ZqhZFuzKT6U", "libSceFiber", 1, "libSceFiber",
-                 sceFiberSwitchImpl); // _sceFiberAttachContextAndSwitch
+    LIB_FUNCTION_GUEST_STACK("avfGJ94g36Q", "libSceFiber", 1, "libSceFiber",
+                             sceFiberRunImpl); // _sceFiberAttachContextAndRun
+    LIB_FUNCTION_GUEST_STACK("ZqhZFuzKT6U", "libSceFiber", 1, "libSceFiber",
+                             sceFiberSwitchImpl); // _sceFiberAttachContextAndSwitch
 
     LIB_FUNCTION("uq2Y5BFz0PE", "libSceFiber", 1, "libSceFiber", sceFiberGetInfo);
     LIB_FUNCTION("Lcqty+QNWFc", "libSceFiber", 1, "libSceFiber", sceFiberStartContextSizeCheck);

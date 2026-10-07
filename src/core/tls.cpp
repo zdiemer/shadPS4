@@ -4,6 +4,7 @@
 #include <mutex>
 #include "common/arch.h"
 #include "common/assert.h"
+#include "core/libraries/fiber/fiber.h"
 #include "core/libraries/kernel/threads/pthread.h"
 #include "core/tls.h"
 
@@ -26,7 +27,32 @@
 #include <unistd.h>
 #endif
 
+extern "C" void* PS4_SYSV_ABI _runOnAnotherStack(void* arg, void* func,
+                                                 void* stack) asm("_runOnAnotherStack");
+
 namespace Core {
+
+void* PS4_SYSV_ABI GetHleStack() {
+    if (!Libraries::Kernel::g_curthread) {
+        return nullptr;
+    }
+    const auto* tcb = Libraries::Kernel::g_curthread->tcb;
+    if (!tcb || !tcb->tcb_fiber || !tcb->tcb_fiber->current_fiber) {
+        return nullptr;
+    }
+    const auto* fiber = tcb->tcb_fiber->current_fiber;
+    const u8 marker{};
+    const auto address = reinterpret_cast<uintptr_t>(&marker);
+    const auto base = reinterpret_cast<uintptr_t>(fiber->addr_context);
+    if (address >= base && address - base < fiber->size_context) {
+        return fiber->hle_stack;
+    }
+    return nullptr;
+}
+
+void PS4_SYSV_ABI RunOnHleStack(void* PS4_SYSV_ABI (*func)(void*), void* arg, void* stack) {
+    _runOnAnotherStack(arg, reinterpret_cast<void*>(func), stack);
+}
 
 #ifdef _WIN32
 
