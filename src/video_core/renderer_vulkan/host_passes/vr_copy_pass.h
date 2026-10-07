@@ -10,12 +10,12 @@
 namespace Vulkan::HostPasses {
 
 class VrCopyPass {
-  public:
+public:
     void Create(vk::Device device);
     void Render(vk::CommandBuffer cmdbuf, vk::ImageView source, vk::ImageView target,
-                vk::Extent2D size, const std::array<float, 4>& bounds);
+                vk::Extent2D size, const std::array<float, 4>& bounds, bool overlay = false);
 
-  private:
+private:
     vk::UniquePipeline pipeline;
     vk::UniquePipelineLayout pipeline_layout;
     vk::UniqueDescriptorSetLayout descriptor_layout;

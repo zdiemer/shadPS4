@@ -122,7 +122,13 @@ void VrCopyPass::Create(vk::Device device) {
 
     const std::array attachments{
         vk::PipelineColorBlendAttachmentState{
-            .blendEnable = false,
+            .blendEnable = true,
+            .srcColorBlendFactor = vk::BlendFactor::eOne,
+            .dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha,
+            .colorBlendOp = vk::BlendOp::eAdd,
+            .srcAlphaBlendFactor = vk::BlendFactor::eOne,
+            .dstAlphaBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha,
+            .alphaBlendOp = vk::BlendOp::eAdd,
             .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
                               vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA,
         },
@@ -177,12 +183,13 @@ void VrCopyPass::Create(vk::Device device) {
 }
 
 void VrCopyPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView source, vk::ImageView target,
-                        vk::Extent2D size, const std::array<float, 4>& bounds) {
+                        vk::Extent2D size, const std::array<float, 4>& bounds, bool overlay) {
     const vk::RenderingAttachmentInfo attachment{
         .imageView = target,
         .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
-        .loadOp = vk::AttachmentLoadOp::eClear,
+        .loadOp = overlay ? vk::AttachmentLoadOp::eLoad : vk::AttachmentLoadOp::eClear,
         .storeOp = vk::AttachmentStoreOp::eStore,
+        .clearValue{.color{std::array{0.0f, 0.0f, 0.0f, 1.0f}}},
     };
     const vk::RenderingInfo rendering{
         .renderArea{.extent = size},

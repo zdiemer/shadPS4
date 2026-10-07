@@ -842,7 +842,9 @@ void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
         return;
     }
     liverpool->SubmitGfxCallback([this, frame] {
-        SCOPE_EXIT { vr_frame_pending = false; };
+        SCOPE_EXIT {
+            vr_frame_pending = false;
+        };
         if (!openxr->IsSessionRunning()) {
             return;
         }
@@ -859,31 +861,40 @@ void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
             poses[eye].position[1] += offset * (2 * (q[0] * q[1] + q[3] * q[2]));
             poses[eye].position[2] += offset * (2 * (q[0] * q[2] - q[3] * q[1]));
         }
-        std::array<VideoCore::TextureCache::ImageDesc, 2> descriptions{};
-        std::array<VideoCore::ImageId, 2> sources{};
-        for (u32 eye = 0; eye < sources.size(); ++eye) {
-            descriptions[eye] = {frame.images[eye], Shader::ImageResource{}};
-            const auto& info = descriptions[eye].info;
-            if (info.pixel_format == vk::Format::eUndefined ||
-                !Core::Memory::Instance()->IsValidGpuMapping(info.guest_address, info.guest_size)) {
-                return;
+        const u32 layer_count = frame.overlay ? 2 : 1;
+        const std::array layers{&frame.scene, frame.overlay ? &*frame.overlay : nullptr};
+        std::array<std::array<VideoCore::TextureCache::ImageDesc, 2>, 2> descriptions{};
+        std::array<std::array<VideoCore::ImageId, 2>, 2> sources{};
+        for (u32 layer = 0; layer < layer_count; ++layer) {
+            for (u32 eye = 0; eye < sources[layer].size(); ++eye) {
+                descriptions[layer][eye] = {layers[layer]->images[eye], Shader::ImageResource{}};
+                const auto& info = descriptions[layer][eye].info;
+                if (info.pixel_format == vk::Format::eUndefined ||
+                    !Core::Memory::Instance()->IsValidGpuMapping(info.guest_address,
+                                                                 info.guest_size)) {
+                    return;
+                }
+                sources[layer][eye] = texture_cache.FindImage(descriptions[layer][eye]);
+                texture_cache.UpdateImage(sources[layer][eye]);
             }
-            sources[eye] = texture_cache.FindImage(descriptions[eye]);
-            texture_cache.UpdateImage(sources[eye]);
         }
         const bool submitted =
             openxr->RenderStereo(poses, fovs, [&](const auto& targets, const auto& sizes) {
                 draw_scheduler.EndRendering();
-                std::array<vk::ImageView, 2> source_views{};
+                std::array<std::array<vk::ImageView, 2>, 2> source_views{};
                 std::array<vk::UniqueImageView, 2> target_views{};
                 for (u32 eye = 0; eye < targets.size(); ++eye) {
-                    auto& source = texture_cache.GetImage(sources[eye]);
-                    auto view_info = descriptions[eye].view_info;
-                    view_info.mapping.a = AmdGpu::CompSwizzle::One;
-                    source_views[eye] = *source.FindView(view_info).image_view;
-                    runtime.Transit(&source, vk::ImageLayout::eShaderReadOnlyOptimal,
-                                    vk::PipelineStageFlagBits2::eFragmentShader,
-                                    vk::AccessFlagBits2::eShaderRead);
+                    for (u32 layer = 0; layer < layer_count; ++layer) {
+                        auto& source = texture_cache.GetImage(sources[layer][eye]);
+                        auto view_info = descriptions[layer][eye].view_info;
+                        if (layer == 0) {
+                            view_info.mapping.a = AmdGpu::CompSwizzle::One;
+                        }
+                        source_views[layer][eye] = *source.FindView(view_info).image_view;
+                        runtime.Transit(&source, vk::ImageLayout::eShaderReadOnlyOptimal,
+                                        vk::PipelineStageFlagBits2::eFragmentShader,
+                                        vk::AccessFlagBits2::eShaderRead);
+                    }
                     target_views[eye] =
                         Check<"create XR eye view">(instance.GetDevice().createImageViewUnique({
                             .image = targets[eye],
@@ -913,15 +924,26 @@ void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
                     };
                     cmdbuf.pipelineBarrier2(
                         {.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier});
-                    const auto& uv = frame.uv_transform[eye];
-                    const std::array bounds{
-                        uv[2] + std::tan(fovs[eye].left) * uv[0],
-                        uv[3] + std::tan(fovs[eye].up) * uv[1],
-                        uv[2] + std::tan(fovs[eye].right) * uv[0],
-                        uv[3] + std::tan(fovs[eye].down) * uv[1],
-                    };
-                    vr_copy_pass.Render(cmdbuf, source_views[eye], *target_views[eye], sizes[eye],
-                                        bounds);
+                    for (u32 layer = 0; layer < layer_count; ++layer) {
+                        if (layer > 0) {
+                            barrier.srcStageMask =
+                                vk::PipelineStageFlagBits2::eColorAttachmentOutput;
+                            barrier.srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite;
+                            barrier.dstAccessMask = vk::AccessFlagBits2::eColorAttachmentRead |
+                                                    vk::AccessFlagBits2::eColorAttachmentWrite;
+                            cmdbuf.pipelineBarrier2(
+                                {.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier});
+                        }
+                        const auto& uv = layers[layer]->uv_transform[eye];
+                        const std::array bounds{
+                            uv[2] + std::tan(fovs[eye].left) * uv[0],
+                            uv[3] + std::tan(fovs[eye].up) * uv[1],
+                            uv[2] + std::tan(fovs[eye].right) * uv[0],
+                            uv[3] + std::tan(fovs[eye].down) * uv[1],
+                        };
+                        vr_copy_pass.Render(cmdbuf, source_views[layer][eye], *target_views[eye],
+                                            sizes[eye], bounds, layer > 0);
+                    }
                     if (screenshot_count > 0) {
                         auto capture_paths =
                             BuildScreenshotPaths(ScreenshotKind::GameOnly, screenshot_count);
