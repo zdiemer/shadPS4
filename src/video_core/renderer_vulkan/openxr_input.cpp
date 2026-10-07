@@ -97,7 +97,7 @@ bool OpenXRInput::Initialize(bool frame_profile) {
             bind(trigger, hand, "/input/trigger/value");
             bind(squeeze, hand, vive ? "/input/squeeze/click" : "/input/squeeze/value");
             bind(stick, hand, vive ? "/input/trackpad" : "/input/thumbstick");
-            bind(buttons[vive && hand == 1 ? 13 : 11], hand,
+            bind(buttons[vive ? 13 : 11], hand,
                  vive ? "/input/trackpad/click" : "/input/thumbstick/click");
             if (vive) {
                 bind(buttons[hand == 0 ? 4 : 5], hand, "/input/menu/click");
@@ -196,6 +196,7 @@ void OpenXRInput::Sync(bool focused, Input::Vr::DeviceState& state) {
             XrActionStateBoolean value{XR_TYPE_ACTION_STATE_BOOLEAN};
             if (XR_SUCCEEDED(xrGetActionStateBoolean(session, &get, &value)) && value.isActive) {
                 controller.active = true;
+                controller.available_buttons |= 1u << button;
                 if (value.currentState) {
                     controller.buttons |= 1u << button;
                 }

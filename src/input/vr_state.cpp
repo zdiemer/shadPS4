@@ -3,6 +3,7 @@
 
 #include "input/vr_state.h"
 
+#include <deque>
 #include <mutex>
 
 namespace Input::Vr {
@@ -11,6 +12,8 @@ namespace {
 
 std::mutex g_mutex;
 DeviceState g_state;
+std::deque<std::array<ControllerSample, 2>> g_controller_history;
+std::uint64_t g_controller_sequence{};
 std::mutex g_provider_mutex;
 TrackingProvider g_provider;
 
@@ -23,7 +26,34 @@ DeviceState GetDeviceState() {
 
 void SetDeviceState(const DeviceState& state) {
     std::scoped_lock lock{g_mutex};
+    if (!state.session_running) {
+        g_controller_history.clear();
+        g_controller_sequence = 0;
+    } else if (state.sample_time > g_state.sample_time) {
+        ++g_controller_sequence;
+        std::array<ControllerSample, 2> samples;
+        for (size_t hand = 0; hand < samples.size(); ++hand) {
+            samples[hand] = {state.controllers[hand], state.sample_time, g_controller_sequence};
+        }
+        g_controller_history.push_back(samples);
+        if (g_controller_history.size() > 32) {
+            g_controller_history.pop_front();
+        }
+    }
     g_state = state;
+}
+
+std::vector<ControllerSample> GetControllerHistory(std::size_t hand) {
+    std::scoped_lock lock{g_mutex};
+    std::vector<ControllerSample> samples;
+    if (hand >= g_state.controllers.size()) {
+        return samples;
+    }
+    samples.reserve(g_controller_history.size());
+    for (const auto& entry : g_controller_history) {
+        samples.push_back(entry[hand]);
+    }
+    return samples;
 }
 
 std::optional<DeviceState> LocateDevice(std::chrono::steady_clock::time_point time) {

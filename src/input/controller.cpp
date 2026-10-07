@@ -97,7 +97,7 @@ State GameController::GetStateLocked() const {
         if (pressed(ControllerButton::Select)) {
             state.OnButton(OrbisPadButtonDataOffset::Cross, true);
         }
-        if (pressed(ControllerButton::FacePad)) {
+        if (pressed(ControllerButton::FacePad) && hand == 1) {
             const auto& stick = controller.stick;
             const auto button = std::abs(stick[0]) > std::abs(stick[1])
                                     ? (stick[0] > 0.0f ? OrbisPadButtonDataOffset::Circle
@@ -110,7 +110,7 @@ State GameController::GetStateLocked() const {
             state.OnButton(hand == 0 ? OrbisPadButtonDataOffset::L1 : OrbisPadButtonDataOffset::R1,
                            true);
         }
-        if (pressed(ControllerButton::Stick)) {
+        if (pressed(ControllerButton::Stick) || (pressed(ControllerButton::FacePad) && hand == 0)) {
             state.OnButton(hand == 0 ? OrbisPadButtonDataOffset::L3 : OrbisPadButtonDataOffset::R3,
                            true);
         }

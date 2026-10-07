@@ -5,9 +5,11 @@
 
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <vector>
 
 namespace Input::Vr {
 
@@ -43,6 +45,7 @@ enum class ControllerButton : std::uint32_t {
 struct ControllerState {
     bool active{};
     std::uint32_t buttons{};
+    std::uint32_t available_buttons{};
     std::array<float, 2> stick{};
     float trigger{};
     float squeeze{};
@@ -79,8 +82,15 @@ struct DeviceState {
     std::chrono::steady_clock::time_point sample_time{};
 };
 
+struct ControllerSample {
+    ControllerState state{};
+    std::chrono::steady_clock::time_point time{};
+    std::uint64_t sequence{};
+};
+
 DeviceState GetDeviceState();
 void SetDeviceState(const DeviceState& state);
+std::vector<ControllerSample> GetControllerHistory(std::size_t hand);
 using TrackingProvider =
     std::function<std::optional<DeviceState>(std::chrono::steady_clock::time_point)>;
 std::optional<DeviceState> LocateDevice(std::chrono::steady_clock::time_point time);
