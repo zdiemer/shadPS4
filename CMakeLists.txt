@@ -1166,6 +1166,8 @@ set(VIDEO_CORE src/video_core/amdgpu/cb_db_extent.h
                src/video_core/renderer_vulkan/liverpool_to_vk.h
                src/video_core/renderer_vulkan/openxr_context.cpp
                src/video_core/renderer_vulkan/openxr_context.h
+               src/video_core/renderer_vulkan/openxr_input.cpp
+               src/video_core/renderer_vulkan/openxr_input.h
                src/video_core/renderer_vulkan/vk_common.cpp
                src/video_core/renderer_vulkan/vk_common.h
                src/video_core/renderer_vulkan/vk_compute_pipeline.cpp

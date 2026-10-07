@@ -5,6 +5,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <optional>
 
@@ -22,6 +23,42 @@ struct FieldOfView {
     float down{};
 };
 
+enum class ControllerButton : std::uint32_t {
+    Cross = 1 << 0,
+    Circle = 1 << 1,
+    Square = 1 << 2,
+    Triangle = 1 << 3,
+    Menu = 1 << 4,
+    View = 1 << 5,
+    Up = 1 << 6,
+    Down = 1 << 7,
+    Left = 1 << 8,
+    Right = 1 << 9,
+    Shoulder = 1 << 10,
+    Stick = 1 << 11,
+    Select = 1 << 12,
+    FacePad = 1 << 13,
+};
+
+struct ControllerState {
+    bool active{};
+    std::uint32_t buttons{};
+    std::array<float, 2> stick{};
+    float trigger{};
+    float squeeze{};
+    Pose grip_pose{};
+    Pose aim_pose{};
+    bool position_valid{};
+    bool orientation_valid{};
+    bool position_tracked{};
+    bool orientation_tracked{};
+    bool aim_valid{};
+    std::array<float, 3> linear_velocity{};
+    std::array<float, 3> angular_velocity{};
+    bool linear_velocity_valid{};
+    bool angular_velocity_valid{};
+};
+
 struct DeviceState {
     bool connected{};
     bool session_running{};
@@ -34,6 +71,7 @@ struct DeviceState {
     Pose head_pose{};
     std::array<Pose, 2> eye_poses{};
     std::array<FieldOfView, 2> field_of_view{};
+    std::array<ControllerState, 2> controllers{};
     std::array<float, 3> linear_velocity{};
     std::array<float, 3> angular_velocity{};
     bool linear_velocity_valid{};
@@ -47,5 +85,9 @@ using TrackingProvider =
     std::function<std::optional<DeviceState>(std::chrono::steady_clock::time_point)>;
 std::optional<DeviceState> LocateDevice(std::chrono::steady_clock::time_point time);
 void SetTrackingProvider(TrackingProvider provider);
+std::array<float, 4> RelativeOrientation(const std::array<float, 4>& orientation,
+                                         const std::array<float, 4>& origin);
+std::array<float, 3> RotateToLocal(const std::array<float, 4>& orientation,
+                                   const std::array<float, 3>& vector);
 
 } // namespace Input::Vr
