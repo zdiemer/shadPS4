@@ -896,7 +896,7 @@ void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
                 }
                 runtime.FlushBarriers();
                 const auto cmdbuf = draw_scheduler.CommandBuffer();
-                const u32 screenshot_count = VideoCore::ConsumeGameOnlyScreenshotRequests();
+                const u32 screenshot_count = VideoCore::ConsumeVrScreenshotRequests();
                 std::array<std::optional<ScreenshotReadback>, 2> screenshots;
                 for (u32 eye = 0; eye < targets.size(); ++eye) {
                     vk::ImageMemoryBarrier2 barrier{

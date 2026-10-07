@@ -26,6 +26,7 @@ enum class CaptureState {
 };
 static CaptureState capture_state{CaptureState::Idle};
 static std::atomic<u32> screenshot_game_only_count{0};
+static std::atomic<u32> screenshot_vr_count{0};
 static std::atomic<u32> screenshot_with_overlays_count{0};
 
 RENDERDOC_API_1_6_0* rdoc_api{};
@@ -137,6 +138,7 @@ void RequestScreenshot(const ScreenshotRequest request) {
     switch (request) {
     case ScreenshotRequest::GameOnly:
         screenshot_game_only_count.fetch_add(1, std::memory_order_relaxed);
+        screenshot_vr_count.fetch_add(1, std::memory_order_relaxed);
         break;
     case ScreenshotRequest::WithOverlays:
         screenshot_with_overlays_count.fetch_add(1, std::memory_order_relaxed);
@@ -149,6 +151,10 @@ void RequestScreenshot(const ScreenshotRequest request) {
 
 u32 ConsumeGameOnlyScreenshotRequests() {
     return screenshot_game_only_count.exchange(0, std::memory_order_acq_rel);
+}
+
+u32 ConsumeVrScreenshotRequests() {
+    return screenshot_vr_count.exchange(0, std::memory_order_acq_rel);
 }
 
 u32 ConsumeWithOverlaysScreenshotRequests() {

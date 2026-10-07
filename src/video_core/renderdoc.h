@@ -44,6 +44,8 @@ void RequestScreenshot(ScreenshotRequest request);
 /// Atomically consumes and returns pending "game only" screenshot request counter.
 u32 ConsumeGameOnlyScreenshotRequests();
 
+u32 ConsumeVrScreenshotRequests();
+
 /// Atomically consumes and returns pending "with overlays" screenshot request counter.
 u32 ConsumeWithOverlaysScreenshotRequests();
 
