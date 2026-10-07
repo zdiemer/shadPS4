@@ -4,9 +4,11 @@
 #include "video_core/renderer_vulkan/openxr_context.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <mutex>
 #include <ranges>
 #include <string_view>
 #include <vector>
@@ -14,6 +16,7 @@
 #include "common/logging/log.h"
 #include "input/vr_state.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
+#include "video_core/renderer_vulkan/vk_scheduler.h"
 
 #ifdef ENABLE_OPENXR
 #define XR_USE_GRAPHICS_API_VULKAN
@@ -89,7 +92,18 @@ struct OpenXRContext::Impl {
     XrSpace local_space{XR_NULL_HANDLE};
     XrSpace view_space{XR_NULL_HANDLE};
     XrSessionState session_state{XR_SESSION_STATE_UNKNOWN};
-    bool session_running{};
+    std::atomic<bool> session_running{};
+    struct EyeSwapchain {
+        XrSwapchain handle{XR_NULL_HANDLE};
+        vk::Extent2D size{};
+        std::vector<XrSwapchainImageVulkanKHR> images;
+    };
+    std::array<EyeSwapchain, 2> swapchains{};
+    std::array<XrCompositionLayerProjectionView, 2> projection_views{};
+    std::mutex stereo_mutex;
+    bool stereo_ready{};
+
+    bool CreateSwapchains();
     PFN_xrGetVulkanGraphicsDeviceKHR get_graphics_device{};
     std::vector<std::string> instance_extensions;
     std::vector<std::string> device_extensions;
@@ -105,6 +119,11 @@ struct OpenXRContext::Impl {
     ~Impl() {
         Input::Vr::SetTrackingProvider({});
         Input::Vr::SetDeviceState({});
+        for (const auto& swapchain : swapchains) {
+            if (swapchain.handle != XR_NULL_HANDLE) {
+                xrDestroySwapchain(swapchain.handle);
+            }
+        }
         if (view_space != XR_NULL_HANDLE) {
             xrDestroySpace(view_space);
         }
@@ -299,6 +318,16 @@ bool OpenXRContext::CreateSession(VkInstance instance, VkPhysicalDevice physical
         LOG_WARNING(Render_Vulkan, "Failed to create OpenXR view reference space");
         return false;
     }
+    if (!impl->CreateSwapchains()) {
+        for (auto& swapchain : impl->swapchains) {
+            if (swapchain.handle != XR_NULL_HANDLE) {
+                xrDestroySwapchain(swapchain.handle);
+                swapchain.handle = XR_NULL_HANDLE;
+            }
+            swapchain.images.clear();
+        }
+        LOG_WARNING(Render_Vulkan, "OpenXR stereo swapchain creation failed");
+    }
     Input::Vr::SetDeviceState({.connected = true});
     if (impl->convert_time) {
         Input::Vr::SetTrackingProvider(
@@ -310,8 +339,144 @@ bool OpenXRContext::CreateSession(VkInstance instance, VkPhysicalDevice physical
     return true;
 }
 
-std::optional<Input::Vr::DeviceState> OpenXRContext::Impl::Locate(
-    std::chrono::steady_clock::time_point time) {
+bool OpenXRContext::Impl::CreateSwapchains() {
+    u32 format_count = 0;
+    if (XR_FAILED(xrEnumerateSwapchainFormats(session, 0, &format_count, nullptr))) {
+        return false;
+    }
+    std::vector<int64_t> formats(format_count);
+    if (XR_FAILED(
+            xrEnumerateSwapchainFormats(session, format_count, &format_count, formats.data())) ||
+        std::ranges::find(formats, VK_FORMAT_R8G8B8A8_SRGB) == formats.end()) {
+        return false;
+    }
+    u32 view_count = 0;
+    std::array<XrViewConfigurationView, 2> views{};
+    for (auto& view : views) {
+        view.type = XR_TYPE_VIEW_CONFIGURATION_VIEW;
+    }
+    if (XR_FAILED(xrEnumerateViewConfigurationViews(instance, system,
+                                                    XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
+                                                    views.size(), &view_count, views.data())) ||
+        view_count != views.size()) {
+        return false;
+    }
+    for (u32 eye = 0; eye < swapchains.size(); ++eye) {
+        auto& swapchain = swapchains[eye];
+        swapchain.size = {views[eye].recommendedImageRectWidth,
+                          views[eye].recommendedImageRectHeight};
+        XrSwapchainCreateInfo create_info{XR_TYPE_SWAPCHAIN_CREATE_INFO};
+        create_info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT |
+                                 XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT |
+                                 XR_SWAPCHAIN_USAGE_TRANSFER_SRC_BIT;
+        create_info.format = VK_FORMAT_R8G8B8A8_SRGB;
+        create_info.sampleCount = 1;
+        create_info.width = swapchain.size.width;
+        create_info.height = swapchain.size.height;
+        create_info.faceCount = 1;
+        create_info.arraySize = 1;
+        create_info.mipCount = 1;
+        if (XR_FAILED(xrCreateSwapchain(session, &create_info, &swapchain.handle))) {
+            return false;
+        }
+        u32 image_count = 0;
+        if (XR_FAILED(xrEnumerateSwapchainImages(swapchain.handle, 0, &image_count, nullptr))) {
+            return false;
+        }
+        swapchain.images.resize(image_count, {XR_TYPE_SWAPCHAIN_IMAGE_VULKAN_KHR});
+        if (XR_FAILED(xrEnumerateSwapchainImages(
+                swapchain.handle, image_count, &image_count,
+                reinterpret_cast<XrSwapchainImageBaseHeader*>(swapchain.images.data())))) {
+            return false;
+        }
+    }
+    LOG_INFO(Render_Vulkan, "OpenXR stereo swapchains: {}x{} and {}x{}", swapchains[0].size.width,
+             swapchains[0].size.height, swapchains[1].size.width, swapchains[1].size.height);
+    return true;
+}
+
+bool OpenXRContext::RenderStereo(const std::array<Input::Vr::Pose, 2>& poses,
+                                 const std::array<Input::Vr::FieldOfView, 2>& fovs,
+                                 const StereoRenderer& render) {
+    if (!impl) {
+        return false;
+    }
+    std::scoped_lock lock{impl->stereo_mutex};
+    if (!impl->session_running || impl->swapchains[0].images.empty() ||
+        impl->swapchains[1].images.empty()) {
+        return false;
+    }
+    std::array<vk::Image, 2> images{};
+    std::array<vk::Extent2D, 2> sizes{};
+    u32 acquired = 0;
+    auto release = [&] {
+        XrSwapchainImageReleaseInfo release_info{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+        std::scoped_lock queue_lock{Scheduler::submit_mutex};
+        bool success = true;
+        for (u32 eye = 0; eye < acquired; ++eye) {
+            success &=
+                XR_SUCCEEDED(xrReleaseSwapchainImage(impl->swapchains[eye].handle, &release_info));
+        }
+        return success;
+    };
+    for (u32 eye = 0; eye < images.size(); ++eye) {
+        auto& swapchain = impl->swapchains[eye];
+        XrSwapchainImageAcquireInfo acquire_info{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+        u32 index = 0;
+        XrResult result;
+        {
+            std::scoped_lock queue_lock{Scheduler::submit_mutex};
+            result = xrAcquireSwapchainImage(swapchain.handle, &acquire_info, &index);
+        }
+        if (XR_FAILED(result)) {
+            impl->stereo_ready = false;
+            release();
+            LOG_WARNING(Render_Vulkan, "OpenXR eye acquire failed: {}", static_cast<s32>(result));
+            return false;
+        }
+        XrSwapchainImageWaitInfo wait_info{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+        wait_info.timeout = XR_INFINITE_DURATION;
+        result = xrWaitSwapchainImage(swapchain.handle, &wait_info);
+        if (XR_FAILED(result)) {
+            impl->stereo_ready = false;
+            release();
+            LOG_WARNING(Render_Vulkan, "OpenXR eye wait failed: {}", static_cast<s32>(result));
+            return false;
+        }
+        ++acquired;
+        images[eye] = swapchain.images[index].image;
+        sizes[eye] = swapchain.size;
+    }
+    const bool rendered = render(images, sizes);
+    if (!release() || !rendered) {
+        impl->stereo_ready = false;
+        return false;
+    }
+    for (u32 eye = 0; eye < poses.size(); ++eye) {
+        auto& view = impl->projection_views[eye];
+        view = {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW};
+        const auto& pose = poses[eye];
+        view.pose.position = {pose.position[0], pose.position[1], pose.position[2]};
+        view.pose.orientation = {pose.orientation[0], pose.orientation[1], pose.orientation[2],
+                                 pose.orientation[3]};
+        view.fov = {fovs[eye].left, fovs[eye].right, fovs[eye].up, fovs[eye].down};
+        view.subImage.swapchain = impl->swapchains[eye].handle;
+        view.subImage.imageRect.extent = {static_cast<int32_t>(sizes[eye].width),
+                                          static_cast<int32_t>(sizes[eye].height)};
+    }
+    impl->stereo_ready = true;
+    return true;
+}
+
+void OpenXRContext::ClearStereo() {
+    if (impl) {
+        std::scoped_lock lock{impl->stereo_mutex};
+        impl->stereo_ready = false;
+    }
+}
+
+std::optional<Input::Vr::DeviceState>
+OpenXRContext::Impl::Locate(std::chrono::steady_clock::time_point time) {
     const auto snapshot = Input::Vr::GetDeviceState();
     if (!snapshot.connected || !snapshot.session_running || !convert_time) {
         return std::nullopt;
@@ -414,6 +579,7 @@ void OpenXRContext::Update() {
                 event = XrEventDataBuffer{XR_TYPE_EVENT_DATA_BUFFER};
                 continue;
             }
+            std::scoped_lock stereo_lock{impl->stereo_mutex};
             impl->session_state = changed.state;
             if (changed.state == XR_SESSION_STATE_READY) {
                 XrSessionBeginInfo begin_info{XR_TYPE_SESSION_BEGIN_INFO};
@@ -422,9 +588,11 @@ void OpenXRContext::Update() {
             } else if (changed.state == XR_SESSION_STATE_STOPPING && impl->session_running) {
                 xrEndSession(impl->session);
                 impl->session_running = false;
+                impl->stereo_ready = false;
             } else if (changed.state == XR_SESSION_STATE_EXITING ||
                        changed.state == XR_SESSION_STATE_LOSS_PENDING) {
                 impl->session_running = false;
+                impl->stereo_ready = false;
             }
             LOG_INFO(Render_Vulkan, "OpenXR session state: {}", static_cast<s32>(changed.state));
             Input::Vr::SetDeviceState({
@@ -434,7 +602,9 @@ void OpenXRContext::Update() {
                 .mounted = changed.state == XR_SESSION_STATE_FOCUSED,
             });
         } else if (event.type == XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING) {
+            std::scoped_lock stereo_lock{impl->stereo_mutex};
             impl->session_running = false;
+            impl->stereo_ready = false;
             Input::Vr::SetDeviceState({});
         }
         event = XrEventDataBuffer{XR_TYPE_EVENT_DATA_BUFFER};
@@ -450,8 +620,11 @@ void OpenXRContext::Update() {
         return;
     }
     XrFrameBeginInfo begin_info{XR_TYPE_FRAME_BEGIN_INFO};
-    if (XR_FAILED(xrBeginFrame(impl->session, &begin_info))) {
-        return;
+    {
+        std::scoped_lock queue_lock{Scheduler::submit_mutex};
+        if (XR_FAILED(xrBeginFrame(impl->session, &begin_info))) {
+            return;
+        }
     }
     Input::Vr::DeviceState state{
         .connected = true,
@@ -466,7 +639,21 @@ void OpenXRContext::Update() {
     XrFrameEndInfo end_info{XR_TYPE_FRAME_END_INFO};
     end_info.displayTime = frame_state.predictedDisplayTime;
     end_info.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-    xrEndFrame(impl->session, &end_info);
+    std::scoped_lock stereo_lock{impl->stereo_mutex};
+    XrCompositionLayerProjection projection{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+    projection.space = impl->local_space;
+    projection.viewCount = impl->projection_views.size();
+    projection.views = impl->projection_views.data();
+    const auto* layer = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&projection);
+    if (frame_state.shouldRender && impl->stereo_ready) {
+        end_info.layerCount = 1;
+        end_info.layers = &layer;
+    }
+    std::scoped_lock queue_lock{Scheduler::submit_mutex};
+    const auto result = xrEndFrame(impl->session, &end_info);
+    if (XR_FAILED(result)) {
+        LOG_WARNING(Render_Vulkan, "OpenXR end frame failed: {}", static_cast<s32>(result));
+    }
 }
 
 #else
@@ -499,6 +686,14 @@ VkPhysicalDevice OpenXRContext::GetGraphicsDevice(VkInstance) const {
 bool OpenXRContext::CreateSession(VkInstance, VkPhysicalDevice, VkDevice, u32) {
     return false;
 }
+
+bool OpenXRContext::RenderStereo(const std::array<Input::Vr::Pose, 2>&,
+                                 const std::array<Input::Vr::FieldOfView, 2>&,
+                                 const StereoRenderer&) {
+    return false;
+}
+
+void OpenXRContext::ClearStereo() {}
 
 void OpenXRContext::Update() {}
 
