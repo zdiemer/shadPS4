@@ -8,5 +8,5 @@ layout(push_constant) uniform settings { vec4 bounds; } params;
 void main() {
     vec2 source_uv = mix(params.bounds.xy, params.bounds.zw, uv);
     color = any(lessThan(source_uv, vec2(0))) || any(greaterThan(source_uv, vec2(1)))
-        ? vec4(0, 0, 0, 1) : vec4(texture(source_image, source_uv).rgb, 1);
+        ? vec4(0) : texture(source_image, source_uv);
 }
