@@ -469,9 +469,8 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     : window{window_}, openxr{std::make_unique<OpenXRContext>()},
       instance{window, EmulatorSettings.GetGpuId(), EmulatorSettings.IsVkValidationEnabled(),
                EmulatorSettings.IsVkCrashDiagnosticEnabled(), openxr.get()},
-      liverpool{liverpool_},
-      draw_scheduler{instance}, present_scheduler{instance}, flip_scheduler{instance},
-      swapchain{instance, window}, runtime{instance, draw_scheduler},
+      liverpool{liverpool_}, draw_scheduler{instance}, present_scheduler{instance},
+      flip_scheduler{instance}, swapchain{instance, window}, runtime{instance, draw_scheduler},
       rasterizer{std::make_unique<Rasterizer>(instance, draw_scheduler, runtime, liverpool)},
       texture_cache{rasterizer->GetTextureCache()} {
     const u32 num_images = swapchain.GetImageCount();
@@ -837,11 +836,19 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     return frame;
 }
 
-void Presenter::SubmitVrFrame(VideoCore::VrFrame frame, Common::UniqueFunction<void, bool> notify) {
+void Presenter::SetVrFrameCallback(std::function<void(bool)> callback) {
+    openxr->SetFrameCallback(std::move(callback));
+}
+
+void Presenter::UpdateVr() {
+    openxr->Update();
+}
+
+void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
     if (vr_frame_pending.exchange(true)) {
         return;
     }
-    liverpool->SubmitGfxCallback([this, frame, notify = std::move(notify)] {
+    liverpool->SubmitGfxCallback([this, frame] {
         SCOPE_EXIT {
             vr_frame_pending = false;
         };
@@ -880,9 +887,6 @@ void Presenter::SubmitVrFrame(VideoCore::VrFrame frame, Common::UniqueFunction<v
         }
         const bool submitted =
             openxr->RenderStereo(poses, fovs, [&](const auto& targets, const auto& sizes) {
-                if (notify) {
-                    notify(true);
-                }
                 draw_scheduler.EndRendering();
                 std::array<std::array<vk::ImageView, 2>, 2> source_views{};
                 std::array<vk::UniqueImageView, 2> target_views{};
@@ -986,9 +990,6 @@ void Presenter::SubmitVrFrame(VideoCore::VrFrame frame, Common::UniqueFunction<v
                     }
                 }
                 draw_scheduler.Finish();
-                if (notify) {
-                    notify(false);
-                }
                 for (const auto& screenshot : screenshots) {
                     if (screenshot) {
                         SavePendingScreenshot(*screenshot);
@@ -1084,7 +1085,6 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
 }
 
 void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame) {
-    openxr->Update();
     // Free the frame for reuse
     const auto free_frame = [&] {
         if (!is_reusing_frame) {

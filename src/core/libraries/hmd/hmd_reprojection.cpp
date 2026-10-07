@@ -26,12 +26,10 @@ std::mutex g_reprojection_mutex;
 bool g_initialized{};
 bool g_buffers_set{};
 u64 g_generation{};
-u64 g_event_revision{};
 
 struct UserEvent {
     Kernel::OrbisKernelEqueue queue{};
     s32 id{};
-    u64 revision{};
 };
 
 std::optional<UserEvent> g_start_event;
@@ -49,7 +47,7 @@ s32 SetUserEvent(std::optional<UserEvent>& event, Kernel::OrbisKernelEqueue queu
     if (!equeue || !equeue->EventExists(id, Kernel::OrbisKernelEvent::Filter::User)) {
         return ORBIS_HMD_ERROR_PARAMETER_INVALID;
     }
-    event = UserEvent{queue, id, ++g_event_revision};
+    event = UserEvent{queue, id};
     return ORBIS_OK;
 }
 
@@ -65,16 +63,23 @@ s32 ClearUserEvent(std::optional<UserEvent>& event) {
     return ORBIS_OK;
 }
 
-void NotifyUserEvent(u64 generation, bool start, u64 revision) {
+void NotifyUserEvent(u64 generation, bool start) {
     std::scoped_lock lock{g_reprojection_mutex};
-    if (!g_initialized || generation != g_generation) {
+    if (!g_initialized || !g_buffers_set || generation != g_generation) {
         return;
     }
     const auto& event = start ? g_start_event : g_end_event;
-    if (event && event->revision == revision) {
+    if (event) {
         if (auto* equeue = Kernel::GetEqueue(event->queue)) {
             equeue->TriggerEvent(event->id, Kernel::OrbisKernelEvent::Filter::User, nullptr);
         }
+    }
+}
+
+void SetReprojectionNotifications() {
+    if (presenter) {
+        presenter->SetVrFrameCallback(
+            [generation = g_generation](bool start) { NotifyUserEvent(generation, start); });
     }
 }
 
@@ -152,12 +157,8 @@ s32 SubmitReprojection(const OrbisHmdReprojectionRenderParam* param,
             return ORBIS_OK;
         }
     }
-    presenter->SubmitVrFrame(
-        frame,
-        [generation = g_generation, start_revision = g_start_event ? g_start_event->revision : 0,
-         end_revision = g_end_event ? g_end_event->revision : 0](bool start) {
-            NotifyUserEvent(generation, start, start ? start_revision : end_revision);
-        });
+    SetReprojectionNotifications();
+    presenter->SubmitVrFrame(frame);
     return ORBIS_OK;
 }
 
@@ -197,6 +198,7 @@ s32 PS4_SYSV_ABI sceHmdReprojectionFinalize() {
         return ORBIS_HMD_ERROR_REPROJECTION_NOT_INITIALIZED;
     }
     if (presenter) {
+        presenter->SetVrFrameCallback({});
         presenter->StopVr();
     }
     g_initialized = false;
@@ -265,6 +267,7 @@ s32 PS4_SYSV_ABI sceHmdReprojectionSetDisplayBuffers(s32 handle, s32 start, s32 
         return ORBIS_HMD_ERROR_HANDLE_INVALID;
     }
     g_buffers_set = true;
+    SetReprojectionNotifications();
     return ORBIS_OK;
 }
 
@@ -333,7 +336,6 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStop() {
     if (!g_initialized) {
         return ORBIS_HMD_ERROR_REPROJECTION_NOT_INITIALIZED;
     }
-    ++g_generation;
     if (presenter) {
         presenter->StopVr();
     }
@@ -362,6 +364,7 @@ s32 PS4_SYSV_ABI sceHmdReprojectionUnsetDisplayBuffers() {
     }
     ++g_generation;
     if (presenter) {
+        presenter->SetVrFrameCallback({});
         presenter->StopVr();
     }
     g_buffers_set = false;

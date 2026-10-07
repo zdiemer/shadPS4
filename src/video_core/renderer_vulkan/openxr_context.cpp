@@ -102,6 +102,8 @@ struct OpenXRContext::Impl {
     std::array<XrCompositionLayerProjectionView, 2> projection_views{};
     std::mutex stereo_mutex;
     bool stereo_ready{};
+    std::mutex frame_callback_mutex;
+    std::function<void(bool)> frame_callback;
 
     bool CreateSwapchains();
     PFN_xrGetVulkanGraphicsDeviceKHR get_graphics_device{};
@@ -566,6 +568,13 @@ Input::Vr::DeviceState OpenXRContext::Impl::Locate(XrTime time, Input::Vr::Devic
     return state;
 }
 
+void OpenXRContext::SetFrameCallback(std::function<void(bool)> callback) {
+    if (impl) {
+        std::scoped_lock lock{impl->frame_callback_mutex};
+        impl->frame_callback = std::move(callback);
+    }
+}
+
 void OpenXRContext::Update() {
     if (!impl || impl->session == XR_NULL_HANDLE || impl->local_space == XR_NULL_HANDLE ||
         impl->view_space == XR_NULL_HANDLE) {
@@ -619,12 +628,20 @@ void OpenXRContext::Update() {
     if (XR_FAILED(xrWaitFrame(impl->session, &wait_info, &frame_state))) {
         return;
     }
+    std::function<void(bool)> frame_callback;
+    {
+        std::scoped_lock lock{impl->frame_callback_mutex};
+        frame_callback = impl->frame_callback;
+    }
     XrFrameBeginInfo begin_info{XR_TYPE_FRAME_BEGIN_INFO};
     {
         std::scoped_lock queue_lock{Scheduler::submit_mutex};
         if (XR_FAILED(xrBeginFrame(impl->session, &begin_info))) {
             return;
         }
+    }
+    if (frame_callback) {
+        frame_callback(true);
     }
     Input::Vr::DeviceState state{
         .connected = true,
@@ -639,20 +656,25 @@ void OpenXRContext::Update() {
     XrFrameEndInfo end_info{XR_TYPE_FRAME_END_INFO};
     end_info.displayTime = frame_state.predictedDisplayTime;
     end_info.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-    std::scoped_lock stereo_lock{impl->stereo_mutex};
-    XrCompositionLayerProjection projection{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
-    projection.space = impl->local_space;
-    projection.viewCount = impl->projection_views.size();
-    projection.views = impl->projection_views.data();
-    const auto* layer = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&projection);
-    if (frame_state.shouldRender && impl->stereo_ready) {
-        end_info.layerCount = 1;
-        end_info.layers = &layer;
+    XrResult result;
+    {
+        std::scoped_lock stereo_lock{impl->stereo_mutex};
+        XrCompositionLayerProjection projection{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+        projection.space = impl->local_space;
+        projection.viewCount = impl->projection_views.size();
+        projection.views = impl->projection_views.data();
+        const auto* layer = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&projection);
+        if (frame_state.shouldRender && impl->stereo_ready) {
+            end_info.layerCount = 1;
+            end_info.layers = &layer;
+        }
+        std::scoped_lock queue_lock{Scheduler::submit_mutex};
+        result = xrEndFrame(impl->session, &end_info);
     }
-    std::scoped_lock queue_lock{Scheduler::submit_mutex};
-    const auto result = xrEndFrame(impl->session, &end_info);
     if (XR_FAILED(result)) {
         LOG_WARNING(Render_Vulkan, "OpenXR end frame failed: {}", static_cast<s32>(result));
+    } else if (frame_callback) {
+        frame_callback(false);
     }
 }
 
@@ -694,6 +716,8 @@ bool OpenXRContext::RenderStereo(const std::array<Input::Vr::Pose, 2>&,
 }
 
 void OpenXRContext::ClearStereo() {}
+
+void OpenXRContext::SetFrameCallback(std::function<void(bool)>) {}
 
 void OpenXRContext::Update() {}
 

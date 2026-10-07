@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 
 #include "common/unique_function.h"
 #include "core/libraries/videoout/buffer.h"
@@ -108,7 +109,9 @@ public:
     Frame* PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& attribute,
                         VAddr cpu_address);
 
-    void SubmitVrFrame(VideoCore::VrFrame frame, Common::UniqueFunction<void, bool> notify = {});
+    void SubmitVrFrame(VideoCore::VrFrame frame);
+    void SetVrFrameCallback(std::function<void(bool)> callback);
+    void UpdateVr();
     void StopVr();
 
     Frame* PrepareBlankFrame(bool present_thread);
