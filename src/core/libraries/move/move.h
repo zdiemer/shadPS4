@@ -3,6 +3,9 @@
 
 #pragma once
 
+#include <cstddef>
+#include <optional>
+
 #include "common/types.h"
 #include "core/libraries/system/userservice.h"
 
@@ -11,6 +14,18 @@ class SymbolsResolver;
 }
 
 namespace Libraries::Move {
+
+enum class OrbisMoveButton : u16 {
+    Select = 1 << 0,
+    Trigger = 1 << 1,
+    Move = 1 << 2,
+    Start = 1 << 3,
+    Triangle = 1 << 4,
+    Circle = 1 << 5,
+    Cross = 1 << 6,
+    Square = 1 << 7,
+    Intercepted = 1 << 15,
+};
 
 struct OrbisMoveDeviceInfo {
     float sphere_radius;
@@ -42,6 +57,11 @@ struct OrbisMoveData {
     s32 count;
     float temperature;
 };
+
+static_assert(sizeof(OrbisMoveData) == 64);
+static_assert(offsetof(OrbisMoveData, timestamp) == 48);
+
+std::optional<size_t> GetControllerIndex(s32 handle);
 
 void RegisterLib(Core::Loader::SymbolsResolver* sym);
 } // namespace Libraries::Move
