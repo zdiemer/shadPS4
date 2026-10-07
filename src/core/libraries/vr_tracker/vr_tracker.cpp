@@ -27,6 +27,17 @@ static std::mutex g_mutex;
 enum class FrameState { Idle, Submitted, Waited, Processed };
 static FrameState g_frame_state{FrameState::Idle};
 static std::optional<u64> g_camera_timestamp;
+static u32 g_camera_frame{};
+static OrbisVrTrackerDevicePermitType g_camera_permit{ORBIS_VR_TRACKER_DEVICE_PERMIT_ALL};
+enum class CalibrationState { Idle, Requested, Sampling };
+static constexpr auto CalibrationSamplingDuration = std::chrono::milliseconds{100};
+struct Calibration {
+    CalibrationState state{CalibrationState::Idle};
+    OrbisVrTrackerCalibrationType type{ORBIS_VR_TRACKER_CALIBRATION_POSITION};
+    std::optional<u32> camera_frame;
+    std::chrono::steady_clock::time_point sampling_started{};
+};
+static std::array<Calibration, 4> g_calibration;
 static std::array<float, 4> g_relative_orientation{0.0f, 0.0f, 0.0f, 1.0f};
 static std::array<float, 4> g_pad_relative_orientation{0.0f, 0.0f, 0.0f, 1.0f};
 static std::array<std::array<float, 4>, 2> g_move_relative_orientation{
@@ -47,6 +58,63 @@ static std::array<s32, 2> g_move_handles{-1, -1};
 static s32 g_gun_handle = -1;
 static s32 g_hmd_handle = -1;
 
+static void AdvanceCalibration() {
+    const auto state = Input::Vr::GetDeviceState();
+    const auto controller_ready = [&](size_t index, const Calibration& calibration) {
+        const auto& controller = state.controllers[index];
+        return controller.active && controller.position_valid &&
+               (calibration.type == ORBIS_VR_TRACKER_CALIBRATION_POSITION ||
+                controller.orientation_valid);
+    };
+    for (size_t device = 0; device < g_calibration.size(); ++device) {
+        auto& calibration = g_calibration[device];
+        if (calibration.state == CalibrationState::Idle ||
+            calibration.camera_frame == g_camera_frame) {
+            continue;
+        }
+        calibration.camera_frame = g_camera_frame;
+        bool ready = state.session_running;
+        switch (device) {
+        case ORBIS_VR_TRACKER_DEVICE_HMD:
+            ready &= state.connected && state.position_valid &&
+                     (calibration.type == ORBIS_VR_TRACKER_CALIBRATION_POSITION ||
+                      state.orientation_valid);
+            break;
+        case ORBIS_VR_TRACKER_DEVICE_DUALSHOCK4:
+            ready &= g_camera_permit == ORBIS_VR_TRACKER_DEVICE_PERMIT_ALL &&
+                     controller_ready(state.controllers[1].active ? 1 : 0, calibration);
+            break;
+        case ORBIS_VR_TRACKER_DEVICE_MOVE:
+            ready &= g_camera_permit == ORBIS_VR_TRACKER_DEVICE_PERMIT_ALL;
+            for (const auto handle : g_move_handles) {
+                if (handle == -1) {
+                    continue;
+                }
+                const auto index = Move::GetControllerIndex(handle);
+                ready &= index && controller_ready(*index, calibration);
+            }
+            break;
+        default:
+            ready = false;
+            break;
+        }
+        const auto previous_state = calibration.state;
+        if (!ready) {
+            calibration.state = CalibrationState::Requested;
+        } else if (calibration.state == CalibrationState::Requested) {
+            calibration.sampling_started = state.sample_time;
+            calibration.state = CalibrationState::Sampling;
+        } else if (state.sample_time - calibration.sampling_started >=
+                   CalibrationSamplingDuration) {
+            calibration.state = CalibrationState::Idle;
+        }
+        if (calibration.state != previous_state) {
+            LOG_DEBUG(Lib_VrTracker, "Calibration device {}, state {}, camera frame {}", device,
+                      static_cast<u32>(calibration.state), g_camera_frame);
+        }
+    }
+}
+
 static s32 WaitForTrackingFrame() {
     if (g_frame_state == FrameState::Idle) {
         return ORBIS_VR_TRACKER_ERROR_NOT_EXECUTE_GPU_SUBMIT;
@@ -61,7 +129,10 @@ static s32 ProcessTrackingFrame() {
     if (g_frame_state == FrameState::Idle || g_frame_state == FrameState::Submitted) {
         return ORBIS_VR_TRACKER_ERROR_NOT_EXECUTE_GPU_WAIT;
     }
-    g_frame_state = FrameState::Processed;
+    if (g_frame_state != FrameState::Processed) {
+        AdvanceCalibration();
+        g_frame_state = FrameState::Processed;
+    }
     return ORBIS_OK;
 }
 
@@ -231,6 +302,7 @@ s32 PS4_SYSV_ABI sceVrTrackerInit(const OrbisVrTrackerInitParam* param) {
     g_library_initialized = true;
     g_frame_state = FrameState::Idle;
     g_camera_timestamp.reset();
+    g_calibration.fill({});
     g_pad_led_color = ORBIS_VR_TRACKER_LED_COLOR_BLUE;
     g_relative_orientation = {0.0f, 0.0f, 0.0f, 1.0f};
     g_pad_relative_orientation = {0.0f, 0.0f, 0.0f, 1.0f};
@@ -420,6 +492,12 @@ s32 PS4_SYSV_ABI sceVrTrackerGetResult(const OrbisVrTrackerGetResultParam* param
         if (!controller.active) {
             return ORBIS_OK;
         }
+        const auto device =
+            move_registered ? ORBIS_VR_TRACKER_DEVICE_MOVE : ORBIS_VR_TRACKER_DEVICE_DUALSHOCK4;
+        if (g_calibration[device].state != CalibrationState::Idle) {
+            result->status = ORBIS_VR_TRACKER_STATUS_CALIBRATING;
+            return ORBIS_OK;
+        }
         if (controller.orientation_valid || controller.position_valid) {
             result->status = ORBIS_VR_TRACKER_STATUS_TRACKING;
         }
@@ -466,6 +544,11 @@ s32 PS4_SYSV_ABI sceVrTrackerGetResult(const OrbisVrTrackerGetResultParam* param
     }
     result->connected = state->connected;
     hmd.sensor_read_system_timestamp = process_time;
+    if (state->connected &&
+        g_calibration[ORBIS_VR_TRACKER_DEVICE_HMD].state != CalibrationState::Idle) {
+        result->status = ORBIS_VR_TRACKER_STATUS_CALIBRATING;
+        return ORBIS_OK;
+    }
     if (state->orientation_valid || state->position_valid) {
         result->status = ORBIS_VR_TRACKER_STATUS_TRACKING;
     }
@@ -565,9 +648,12 @@ s32 PS4_SYSV_ABI sceVrTrackerGpuSubmit(const OrbisVrTrackerGpuSubmitParam* param
         return ORBIS_VR_TRACKER_ERROR_ALREADY_PROCESSING_CAMERA_FRAME;
     }
     g_camera_timestamp = frame.meta.timestamp[0];
+    g_camera_frame = frame.meta.frame[0];
+    g_camera_permit = param->tracking_device_permit_type;
     g_frame_state = FrameState::Submitted;
-    LOG_DEBUG(Lib_VrTracker, "Submitted virtual camera frame {}, timestamp {}", frame.meta.frame[0],
-              *g_camera_timestamp);
+    LOG_DEBUG(Lib_VrTracker, "Submitted virtual camera frame {}, timestamp {}, permit {}",
+              frame.meta.frame[0], *g_camera_timestamp,
+              static_cast<u32>(param->tracking_device_permit_type));
     return ORBIS_OK;
 }
 
@@ -611,20 +697,23 @@ sceVrTrackerNotifyEndOfCpuProcess(const OrbisVrTrackerNotifyEndOfCpuProcessParam
 
 s32 PS4_SYSV_ABI sceVrTrackerRecalibrate(const OrbisVrTrackerRecalibrateParam* param) {
     std::scoped_lock lock{g_mutex};
-    LOG_ERROR(Lib_VrTracker, "(STUBBED) called");
     if (!g_library_initialized) {
         return ORBIS_VR_TRACKER_ERROR_NOT_INIT;
     }
     if (param == nullptr || param->size != sizeof(OrbisVrTrackerRecalibrateParam) ||
-        param->device_type > OrbisVrTrackerDeviceType::ORBIS_VR_TRACKER_DEVICE_GUN) {
+        param->device_type < ORBIS_VR_TRACKER_DEVICE_HMD ||
+        param->device_type > ORBIS_VR_TRACKER_DEVICE_GUN ||
+        (param->calibration_type != ORBIS_VR_TRACKER_CALIBRATION_POSITION &&
+         param->calibration_type != ORBIS_VR_TRACKER_CALIBRATION_ALL)) {
         return ORBIS_VR_TRACKER_ERROR_ARGUMENT_INVALID;
     }
 
     OrbisVrTrackerDeviceType device_type = param->device_type;
     switch (device_type) {
     case OrbisVrTrackerDeviceType::ORBIS_VR_TRACKER_DEVICE_HMD: {
-        // Seems like the lack of a connected hmd results in this?
-        return ORBIS_VR_TRACKER_ERROR_DEVICE_NOT_REGISTERED;
+        if (g_hmd_handle == -1) {
+            return ORBIS_VR_TRACKER_ERROR_DEVICE_NOT_REGISTERED;
+        }
         break;
     }
     case OrbisVrTrackerDeviceType::ORBIS_VR_TRACKER_DEVICE_DUALSHOCK4: {
@@ -652,7 +741,13 @@ s32 PS4_SYSV_ABI sceVrTrackerRecalibrate(const OrbisVrTrackerRecalibrateParam* p
     }
     }
 
-    // TODO: handle internal recalibration behaviors.
+    g_calibration[device_type] = {
+        .state = CalibrationState::Requested,
+        .type = param->calibration_type,
+        .camera_frame = g_camera_timestamp ? std::optional{g_camera_frame} : std::nullopt,
+    };
+    LOG_DEBUG(Lib_VrTracker, "Requested calibration device {}, type {}",
+              static_cast<u32>(device_type), static_cast<u32>(param->calibration_type));
     return ORBIS_OK;
 }
 
@@ -839,16 +934,22 @@ s32 PS4_SYSV_ABI sceVrTrackerUnregisterDevice(const s32 handle) {
     // Since this function only takes a handle, compare the handle to registered handles.
     if (handle == g_hmd_handle) {
         g_hmd_handle = -1;
+        g_calibration[ORBIS_VR_TRACKER_DEVICE_HMD] = {};
     } else if (handle == g_pad_handle) {
         g_pad_handle = -1;
+        g_calibration[ORBIS_VR_TRACKER_DEVICE_DUALSHOCK4] = {};
         g_pad_led_color = ORBIS_VR_TRACKER_LED_COLOR_BLUE;
         g_pad_relative_orientation = {0.0f, 0.0f, 0.0f, 1.0f};
     } else if (const auto move = std::ranges::find(g_move_handles, handle);
                move != g_move_handles.end()) {
         g_move_relative_orientation[move - g_move_handles.begin()] = {0.0f, 0.0f, 0.0f, 1.0f};
         *move = -1;
+        if (std::ranges::all_of(g_move_handles, [](s32 handle) { return handle == -1; })) {
+            g_calibration[ORBIS_VR_TRACKER_DEVICE_MOVE] = {};
+        }
     } else if (handle == g_gun_handle) {
         g_gun_handle = -1;
+        g_calibration[ORBIS_VR_TRACKER_DEVICE_GUN] = {};
     } else {
         // If none of the handles match up, then return an error.
         return ORBIS_VR_TRACKER_ERROR_ARGUMENT_INVALID;
@@ -866,6 +967,7 @@ s32 PS4_SYSV_ABI sceVrTrackerTerm() {
     g_library_initialized = false;
     g_frame_state = FrameState::Idle;
     g_camera_timestamp.reset();
+    g_calibration.fill({});
     g_hmd_handle = g_pad_handle = g_gun_handle = -1;
     g_pad_led_color = ORBIS_VR_TRACKER_LED_COLOR_BLUE;
     g_move_handles.fill(-1);
