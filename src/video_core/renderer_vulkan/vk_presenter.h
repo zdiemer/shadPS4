@@ -3,12 +3,14 @@
 
 #pragma once
 
+#include <atomic>
 #include <condition_variable>
 
 #include "core/libraries/videoout/buffer.h"
 #include "imgui/imgui_texture.h"
 #include "video_core/renderer_vulkan/host_passes/fsr_pass.h"
 #include "video_core/renderer_vulkan/host_passes/pp_pass.h"
+#include "video_core/renderer_vulkan/host_passes/vr_copy_pass.h"
 #include "video_core/renderer_vulkan/host_passes/ycbcr_pass.h"
 #include "video_core/renderer_vulkan/openxr_context.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -16,6 +18,7 @@
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_swapchain.h"
 #include "video_core/texture_cache/texture_cache.h"
+#include "video_core/vr_frame.h"
 
 namespace Frontend {
 class WindowSDL;
@@ -104,6 +107,9 @@ public:
     Frame* PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& attribute,
                         VAddr cpu_address);
 
+    void SubmitVrFrame(VideoCore::VrFrame frame);
+    void StopVr();
+
     Frame* PrepareBlankFrame(bool present_thread);
 
     void Present(Frame* frame, bool is_reusing_frame = false, bool is_game_frame = true);
@@ -129,6 +135,8 @@ private:
     HostPasses::PostProcessingPass::Settings pp_settings{};
     HostPasses::PostProcessingPass pp_pass;
     HostPasses::YcbcrPass ycbcr_pass;
+    HostPasses::VrCopyPass vr_copy_pass;
+    std::atomic<bool> vr_frame_pending{};
     AmdGpu::Liverpool* liverpool;
     Scheduler draw_scheduler;
     Scheduler present_scheduler;

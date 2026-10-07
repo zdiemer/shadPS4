@@ -5,11 +5,13 @@
 #include "common/elf_info.h"
 #include "common/io_file.h"
 #include "common/path_util.h"
+#include "common/scope_exit.h"
 #include "common/singleton.h"
 #include "core/debug_state.h"
 #include "core/devtools/layer.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/system/systemservice.h"
+#include "core/memory.h"
 #include "imgui/friends_layer.h"
 #include "imgui/invitation_prompt_layer.h"
 #include "imgui/notifications_layer.h"
@@ -17,6 +19,7 @@
 #include "imgui/renderer/imgui_impl_vulkan.h"
 #include "imgui/shadnet_notifications_layer.h"
 #include "sdl_window.h"
+#include "video_core/amdgpu/liverpool.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/renderdoc.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
@@ -495,6 +498,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     pp_pass.Create(device, swapchain.GetSurfaceFormat().format);
 
     if (openxr->IsAvailable()) {
+        vr_copy_pass.Create(device);
         openxr->CreateSession(instance.GetInstance(), instance.GetPhysicalDevice(), device,
                               instance.GetGraphicsQueueFamilyIndex());
     }
@@ -831,6 +835,151 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     SubmitInfo info{};
     draw_scheduler.Flush(info);
     return frame;
+}
+
+void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
+    if (vr_frame_pending.exchange(true)) {
+        return;
+    }
+    liverpool->SubmitGfxCallback([this, frame] {
+        SCOPE_EXIT { vr_frame_pending = false; };
+        if (!openxr->IsSessionRunning()) {
+            return;
+        }
+        const float outer = std::atan(1.20743f);
+        const float inner = std::atan(1.181346f);
+        const float vertical = std::atan(1.262872f);
+        const std::array<Input::Vr::FieldOfView, 2> fovs{
+            {{-outer, inner, vertical, -vertical}, {-inner, outer, vertical, -vertical}}};
+        std::array<Input::Vr::Pose, 2> poses{frame.head_pose, frame.head_pose};
+        const auto& q = frame.head_pose.orientation;
+        for (u32 eye = 0; eye < poses.size(); ++eye) {
+            const float offset = eye == 0 ? -0.0315f : 0.0315f;
+            poses[eye].position[0] += offset * (1 - 2 * (q[1] * q[1] + q[2] * q[2]));
+            poses[eye].position[1] += offset * (2 * (q[0] * q[1] + q[3] * q[2]));
+            poses[eye].position[2] += offset * (2 * (q[0] * q[2] - q[3] * q[1]));
+        }
+        std::array<VideoCore::TextureCache::ImageDesc, 2> descriptions{};
+        std::array<VideoCore::ImageId, 2> sources{};
+        for (u32 eye = 0; eye < sources.size(); ++eye) {
+            descriptions[eye] = {frame.images[eye], Shader::ImageResource{}};
+            const auto& info = descriptions[eye].info;
+            if (info.pixel_format == vk::Format::eUndefined ||
+                !Core::Memory::Instance()->IsValidGpuMapping(info.guest_address, info.guest_size)) {
+                return;
+            }
+            sources[eye] = texture_cache.FindImage(descriptions[eye]);
+            texture_cache.UpdateImage(sources[eye]);
+        }
+        const bool submitted =
+            openxr->RenderStereo(poses, fovs, [&](const auto& targets, const auto& sizes) {
+                draw_scheduler.EndRendering();
+                std::array<vk::ImageView, 2> source_views{};
+                std::array<vk::UniqueImageView, 2> target_views{};
+                for (u32 eye = 0; eye < targets.size(); ++eye) {
+                    auto& source = texture_cache.GetImage(sources[eye]);
+                    auto view_info = descriptions[eye].view_info;
+                    view_info.mapping.a = AmdGpu::CompSwizzle::One;
+                    source_views[eye] = *source.FindView(view_info).image_view;
+                    runtime.Transit(&source, vk::ImageLayout::eShaderReadOnlyOptimal,
+                                    vk::PipelineStageFlagBits2::eFragmentShader,
+                                    vk::AccessFlagBits2::eShaderRead);
+                    target_views[eye] =
+                        Check<"create XR eye view">(instance.GetDevice().createImageViewUnique({
+                            .image = targets[eye],
+                            .viewType = vk::ImageViewType::e2D,
+                            .format = vk::Format::eR8G8B8A8Srgb,
+                            .subresourceRange{.aspectMask = vk::ImageAspectFlagBits::eColor,
+                                              .levelCount = 1,
+                                              .layerCount = 1},
+                        }));
+                }
+                runtime.FlushBarriers();
+                const auto cmdbuf = draw_scheduler.CommandBuffer();
+                const u32 screenshot_count = VideoCore::ConsumeGameOnlyScreenshotRequests();
+                std::array<std::optional<ScreenshotReadback>, 2> screenshots;
+                for (u32 eye = 0; eye < targets.size(); ++eye) {
+                    vk::ImageMemoryBarrier2 barrier{
+                        .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+                        .srcAccessMask = vk::AccessFlagBits2::eMemoryRead,
+                        .dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                        .dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
+                        .oldLayout = vk::ImageLayout::eColorAttachmentOptimal,
+                        .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+                        .image = targets[eye],
+                        .subresourceRange{.aspectMask = vk::ImageAspectFlagBits::eColor,
+                                          .levelCount = 1,
+                                          .layerCount = 1},
+                    };
+                    cmdbuf.pipelineBarrier2(
+                        {.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier});
+                    const auto& uv = frame.uv_transform[eye];
+                    const std::array bounds{
+                        uv[2] + std::tan(fovs[eye].left) * uv[0],
+                        uv[3] + std::tan(fovs[eye].up) * uv[1],
+                        uv[2] + std::tan(fovs[eye].right) * uv[0],
+                        uv[3] + std::tan(fovs[eye].down) * uv[1],
+                    };
+                    vr_copy_pass.Render(cmdbuf, source_views[eye], *target_views[eye], sizes[eye],
+                                        bounds);
+                    if (screenshot_count > 0) {
+                        auto capture_paths =
+                            BuildScreenshotPaths(ScreenshotKind::GameOnly, screenshot_count);
+                        for (auto& path : capture_paths) {
+                            path.replace_filename(fmt::format("{}_{}.png", path.stem().string(),
+                                                              eye == 0 ? "left" : "right"));
+                        }
+                        auto& readback = screenshots[eye].emplace(
+                            instance, ScreenshotKind::GameOnly, std::move(capture_paths),
+                            sizes[eye].width, sizes[eye].height, vk::Format::eR8G8B8A8Srgb, false);
+                        barrier.srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
+                        barrier.srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite;
+                        barrier.dstStageMask = vk::PipelineStageFlagBits2::eCopy;
+                        barrier.dstAccessMask = vk::AccessFlagBits2::eTransferRead;
+                        barrier.newLayout = vk::ImageLayout::eTransferSrcOptimal;
+                        cmdbuf.pipelineBarrier2(
+                            {.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier});
+                        CopyImageToReadback(cmdbuf, targets[eye], barrier.newLayout, readback);
+                        runtime.AccessBuffer(
+                            &readback.buffer, 0, readback.buffer.mapped_data.size(),
+                            vk::PipelineStageFlagBits2::eCopy, vk::AccessFlagBits2::eTransferWrite);
+                        barrier.srcStageMask = vk::PipelineStageFlagBits2::eCopy;
+                        barrier.srcAccessMask = vk::AccessFlagBits2::eTransferRead;
+                        barrier.dstStageMask = vk::PipelineStageFlagBits2::eAllCommands;
+                        barrier.dstAccessMask = vk::AccessFlagBits2::eMemoryRead;
+                        barrier.oldLayout = vk::ImageLayout::eTransferSrcOptimal;
+                        barrier.newLayout = vk::ImageLayout::eColorAttachmentOptimal;
+                        cmdbuf.pipelineBarrier2(
+                            {.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier});
+                    } else {
+                        barrier.srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
+                        barrier.srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite;
+                        barrier.dstStageMask = vk::PipelineStageFlagBits2::eAllCommands;
+                        barrier.dstAccessMask = vk::AccessFlagBits2::eMemoryRead;
+                        cmdbuf.pipelineBarrier2(
+                            {.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier});
+                    }
+                }
+                draw_scheduler.Finish();
+                for (const auto& screenshot : screenshots) {
+                    if (screenshot) {
+                        SavePendingScreenshot(*screenshot);
+                    }
+                }
+                return true;
+            });
+        if (submitted) {
+            static u64 submitted_count{};
+            if (++submitted_count == 1 || submitted_count % 300 == 0) {
+                LOG_INFO(Render_Vulkan, "Submitted OpenXR stereo frame {} (guest {})",
+                         submitted_count, frame.frame_number);
+            }
+        }
+    });
+}
+
+void Presenter::StopVr() {
+    liverpool->SubmitGfxCallback([this] { openxr->ClearStereo(); });
 }
 
 Frame* Presenter::PrepareBlankFrame(bool present_thread) {
