@@ -223,6 +223,22 @@ public:
         return false;
     }
 
+    bool CopyMeta(VAddr dst, VAddr src) {
+        auto dst_it = surface_metas.find(dst);
+        if (dst_it == surface_metas.end()) {
+            return false;
+        }
+        const auto src_it = surface_metas.find(src);
+        if (src_it == surface_metas.end()) {
+            dst_it->second.clear_mask = u32(-1);
+        } else if (src_it->second.type == dst_it->second.type) {
+            dst_it->second.clear_mask = src_it->second.clear_mask;
+        } else {
+            return false;
+        }
+        return true;
+    }
+
     /// Updates the state of a slice of the specified metadata surface.
     bool TouchMeta(VAddr address, u32 slice, bool is_clear) {
         auto it = surface_metas.find(address);
