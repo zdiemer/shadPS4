@@ -42,6 +42,7 @@ static u32 g_work_size = 0;
 
 // Registered handles
 static s32 g_pad_handle = -1;
+static OrbisVrTrackerLedColor g_pad_led_color{ORBIS_VR_TRACKER_LED_COLOR_BLUE};
 static std::array<s32, 2> g_move_handles{-1, -1};
 static s32 g_gun_handle = -1;
 static s32 g_hmd_handle = -1;
@@ -230,6 +231,7 @@ s32 PS4_SYSV_ABI sceVrTrackerInit(const OrbisVrTrackerInitParam* param) {
     g_library_initialized = true;
     g_frame_state = FrameState::Idle;
     g_camera_timestamp.reset();
+    g_pad_led_color = ORBIS_VR_TRACKER_LED_COLOR_BLUE;
     g_relative_orientation = {0.0f, 0.0f, 0.0f, 1.0f};
     g_pad_relative_orientation = {0.0f, 0.0f, 0.0f, 1.0f};
     g_move_relative_orientation.fill({0.0f, 0.0f, 0.0f, 1.0f});
@@ -276,6 +278,8 @@ s32 PS4_SYSV_ABI sceVrTrackerRegisterDeviceInternal(const OrbisVrTrackerDeviceTy
             return ORBIS_VR_TRACKER_ERROR_DEVICE_ALREADY_REGISTERED;
         }
         g_pad_handle = handle;
+        g_pad_led_color =
+            unk0 < 0 ? ORBIS_VR_TRACKER_LED_COLOR_BLUE : static_cast<OrbisVrTrackerLedColor>(unk0);
         break;
     }
     case OrbisVrTrackerDeviceType::ORBIS_VR_TRACKER_DEVICE_MOVE: {
@@ -386,6 +390,9 @@ s32 PS4_SYSV_ABI sceVrTrackerGetResult(const OrbisVrTrackerGetResultParam* param
     result->user_frame_number = param->user_frame_number;
     result->camera_orientation_w = 1.0f;
     result->status = ORBIS_VR_TRACKER_STATUS_NOT_TRACKING;
+    if (param->handle == g_pad_handle) {
+        result->led_color = g_pad_led_color;
+    }
     if (param->handle != g_hmd_handle) {
         if (move_registered) {
             result->move_info.device_pose = ConvertPose({}, false);
@@ -760,9 +767,9 @@ s32 PS4_SYSV_ABI Func_9A6CDB2103664F8A() {
     return ORBIS_OK;
 }
 
-s32 PS4_SYSV_ABI Func_B4D26B7D8B18DF06() {
-    LOG_ERROR(Lib_VrTracker, "(STUBBED) called");
-    return ORBIS_OK;
+s32 PS4_SYSV_ABI sceVrTrackerRegisterDeviceFor4thDS4(const OrbisVrTrackerDeviceType device_type,
+                                                     const s32 handle, const s32 led_color) {
+    return sceVrTrackerRegisterDeviceInternal(device_type, handle, led_color, 1);
 }
 
 s32 PS4_SYSV_ABI sceVrTrackerSetDeviceRejection() {
@@ -834,6 +841,7 @@ s32 PS4_SYSV_ABI sceVrTrackerUnregisterDevice(const s32 handle) {
         g_hmd_handle = -1;
     } else if (handle == g_pad_handle) {
         g_pad_handle = -1;
+        g_pad_led_color = ORBIS_VR_TRACKER_LED_COLOR_BLUE;
         g_pad_relative_orientation = {0.0f, 0.0f, 0.0f, 1.0f};
     } else if (const auto move = std::ranges::find(g_move_handles, handle);
                move != g_move_handles.end()) {
@@ -859,6 +867,7 @@ s32 PS4_SYSV_ABI sceVrTrackerTerm() {
     g_frame_state = FrameState::Idle;
     g_camera_timestamp.reset();
     g_hmd_handle = g_pad_handle = g_gun_handle = -1;
+    g_pad_led_color = ORBIS_VR_TRACKER_LED_COLOR_BLUE;
     g_move_handles.fill(-1);
     g_relative_orientation = {0.0f, 0.0f, 0.0f, 1.0f};
     g_pad_relative_orientation = {0.0f, 0.0f, 0.0f, 1.0f};
@@ -908,7 +917,8 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("D6TJSfjTAk4", "libSceVrTracker", 1, "libSceVrTracker", Func_0FA4C949F8D3024E);
     LIB_FUNCTION("KFxq-AnEL34", "libSceVrTracker", 1, "libSceVrTracker", Func_285C6AFC09C42F7E);
     LIB_FUNCTION("mmzbIQNmT4o", "libSceVrTracker", 1, "libSceVrTracker", Func_9A6CDB2103664F8A);
-    LIB_FUNCTION("tNJrfYsY3wY", "libSceVrTracker", 1, "libSceVrTracker", Func_B4D26B7D8B18DF06);
+    LIB_FUNCTION("tNJrfYsY3wY", "libSceVrTracker", 1, "libSceVrTracker",
+                 sceVrTrackerRegisterDeviceFor4thDS4);
     LIB_FUNCTION("jGqEkPy0iLU", "libSceVrTrackerDeviceRejection", 1, "libSceVrTracker",
                  sceVrTrackerSetDeviceRejection);
     LIB_FUNCTION("ERmwvjmfN+c", "libSceVrTrackerGpuTest", 1, "libSceVrTracker",

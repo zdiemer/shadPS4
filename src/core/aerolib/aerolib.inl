@@ -153693,6 +153693,7 @@ STUB(
 STUB("tN9h-eGhruY", _ZN3sce2Np9CppWebApi6Common13ConstIteratorINS1_7Matches2V113SubtaskStatusEED1Ev)
 STUB("tNGIaEi-9HE", mono_metadata_properties_from_typedef)
 STUB("tNJjozY-ivY", _ZN7WebCore24parseXFrameOptionsHeaderERKN3WTF6StringE)
+STUB("tNJrfYsY3wY", sceVrTrackerRegisterDeviceFor4thDS4)
 STUB(
     "tNKVf6A3Vwk",
     _ZN3sce2Np9CppWebApi6Common12IntrusivePtrINS2_6VectorINS3_INS1_21AdvancedPlayerProfile2V129FrequentlyMutedInPartyMetricsEEEEEEC2EPS9_PNS2_10LibContextE)
