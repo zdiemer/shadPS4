@@ -255,6 +255,12 @@ struct OrbisVrTrackerNotifyEndOfCpuProcessParam {
     u32 reserved[7];
 };
 
+static_assert(sizeof(OrbisVrTrackerGpuSubmitParam) == 648);
+static_assert(offsetof(OrbisVrTrackerGpuSubmitParam, camera_frame_data) == 64);
+static_assert(sizeof(OrbisVrTrackerGpuWaitParam) == 32);
+static_assert(sizeof(OrbisVrTrackerCpuProcessParam) == 32);
+static_assert(sizeof(OrbisVrTrackerNotifyEndOfCpuProcessParam) == 32);
+
 struct OrbisVrTrackerUpdateMotionSensorDataParam {
     u32 size;
     OrbisVrTrackerDeviceType device_type;
