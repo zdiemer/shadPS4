@@ -1,13 +1,29 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <mutex>
 #include "common/logging/log.h"
 #include "core/libraries/error_codes.h"
 #include "core/libraries/hmd/hmd.h"
 #include "core/libraries/hmd/hmd_error.h"
 #include "core/libraries/libs.h"
+#include "core/libraries/videoout/video_out.h"
+#include "core/memory.h"
+#include "video_core/amdgpu/resource.h"
+#include "video_core/renderer_vulkan/vk_presenter.h"
+
+extern std::unique_ptr<Vulkan::Presenter> presenter;
 
 namespace Libraries::Hmd {
+
+namespace {
+std::mutex g_reprojection_mutex;
+bool g_initialized{};
+bool g_buffers_set{};
+} // namespace
 
 s32 PS4_SYSV_ABI sceHmdReprojectionStartMultilayer() {
     LOG_ERROR(Lib_Hmd, "(STUBBED) called");
@@ -40,7 +56,15 @@ s32 PS4_SYSV_ABI sceHmdReprojectionDebugGetLastInfoMultilayer() {
 }
 
 s32 PS4_SYSV_ABI sceHmdReprojectionFinalize() {
-    LOG_ERROR(Lib_Hmd, "(STUBBED) called");
+    std::scoped_lock lock{g_reprojection_mutex};
+    if (!g_initialized) {
+        return ORBIS_HMD_ERROR_REPROJECTION_NOT_INITIALIZED;
+    }
+    if (presenter) {
+        presenter->StopVr();
+    }
+    g_initialized = false;
+    g_buffers_set = false;
     return ORBIS_OK;
 }
 
@@ -49,8 +73,19 @@ s32 PS4_SYSV_ABI sceHmdReprojectionFinalizeCapture() {
     return ORBIS_OK;
 }
 
-s32 PS4_SYSV_ABI sceHmdReprojectionInitialize() {
-    LOG_ERROR(Lib_Hmd, "(STUBBED) called");
+s32 PS4_SYSV_ABI sceHmdReprojectionInitialize(const OrbisHmdReprojectionInitParam* param, u32 mode,
+                                              u32 flags) {
+    std::scoped_lock lock{g_reprojection_mutex};
+    if (g_initialized) {
+        return ORBIS_HMD_ERROR_REPROJECTION_ALREADY_INITIALIZED;
+    }
+    if (param == nullptr) {
+        return ORBIS_HMD_ERROR_PARAMETER_NULL;
+    }
+    if (mode > 2 || flags != 0) {
+        return ORBIS_HMD_ERROR_PARAMETER_INVALID;
+    }
+    g_initialized = true;
     return ORBIS_OK;
 }
 
@@ -59,9 +94,7 @@ s32 PS4_SYSV_ABI sceHmdReprojectionInitializeCapture() {
     return ORBIS_OK;
 }
 
-s32 PS4_SYSV_ABI sceHmdReprojectionQueryGarlicBuffAlign() {
-    return 0x100;
-}
+s32 PS4_SYSV_ABI sceHmdReprojectionQueryGarlicBuffAlign() { return 0x100; }
 
 s32 PS4_SYSV_ABI sceHmdReprojectionQueryGarlicBuffSize() {
     return 0x100000;
@@ -80,8 +113,19 @@ s32 PS4_SYSV_ABI sceHmdReprojectionSetCallback() {
     return ORBIS_OK;
 }
 
-s32 PS4_SYSV_ABI sceHmdReprojectionSetDisplayBuffers() {
-    LOG_ERROR(Lib_Hmd, "(STUBBED) called");
+s32 PS4_SYSV_ABI sceHmdReprojectionSetDisplayBuffers(s32 handle, s32 start, s32 count, u32 flags) {
+    std::scoped_lock lock{g_reprojection_mutex};
+    if (!g_initialized) {
+        return ORBIS_HMD_ERROR_REPROJECTION_NOT_INITIALIZED;
+    }
+    if (handle <= 0 || start < 0 || start >= 16 || count <= 0 || count > 16 - start || flags != 0) {
+        return ORBIS_HMD_ERROR_PARAMETER_INVALID;
+    }
+    uintptr_t labels{};
+    if (VideoOut::sceVideoOutGetBufferLabelAddress(handle, &labels) < 0) {
+        return ORBIS_HMD_ERROR_HANDLE_INVALID;
+    }
+    g_buffers_set = true;
     return ORBIS_OK;
 }
 
@@ -100,8 +144,61 @@ s32 PS4_SYSV_ABI sceHmdReprojectionSetUserEventStart() {
     return ORBIS_OK;
 }
 
-s32 PS4_SYSV_ABI sceHmdReprojectionStart() {
-    LOG_ERROR(Lib_Hmd, "(STUBBED) called");
+s32 PS4_SYSV_ABI sceHmdReprojectionStart(const OrbisHmdReprojectionRenderParam* param,
+                                         const OrbisHmdReprojectionPose* pose, u64 frame_number,
+                                         u32 flags) {
+    std::scoped_lock lock{g_reprojection_mutex};
+    if (!g_initialized) {
+        return ORBIS_HMD_ERROR_REPROJECTION_NOT_INITIALIZED;
+    }
+    if (!g_buffers_set) {
+        return ORBIS_HMD_ERROR_REPROJECTION_NO_DISPLAY_BUFFER;
+    }
+    if (param == nullptr || pose == nullptr) {
+        return ORBIS_HMD_ERROR_PARAMETER_NULL;
+    }
+    if (flags != 0 || !presenter) {
+        return ORBIS_HMD_ERROR_PARAMETER_INVALID;
+    }
+    VideoCore::VrFrame frame{};
+    frame.frame_number = frame_number;
+    std::copy_n(pose->position, 3, frame.head_pose.position.begin());
+    std::copy_n(pose->orientation, 4, frame.head_pose.orientation.begin());
+    if (!std::ranges::all_of(frame.head_pose.position,
+                             [](float value) { return std::isfinite(value); })) {
+        return ORBIS_HMD_ERROR_PARAMETER_INVALID;
+    }
+    float norm = 0;
+    for (float value : frame.head_pose.orientation) {
+        norm += value * value;
+    }
+    if (!std::isfinite(norm) || norm < 0.000001f) {
+        return ORBIS_OK;
+    }
+    for (float& value : frame.head_pose.orientation) {
+        value /= std::sqrt(norm);
+    }
+    const std::array pointers{param->left_image, param->right_image};
+    const std::array transforms{param->left_uv, param->right_uv};
+    for (u32 eye = 0; eye < pointers.size(); ++eye) {
+        const auto address = reinterpret_cast<VAddr>(pointers[eye]);
+        if (!Core::Memory::Instance()->IsValidMapping(address, sizeof(AmdGpu::Image))) {
+            return ORBIS_HMD_ERROR_PARAMETER_INVALID;
+        }
+        std::memcpy(&frame.images[eye], pointers[eye], sizeof(AmdGpu::Image));
+        const auto& image = frame.images[eye];
+        if (!image.Valid() || image.GetBaseType() != AmdGpu::ImageType::Color2D ||
+            image.NumSamples() != 1 || AmdGpu::IsBlockCoded(image.GetDataFmt()) ||
+            !Core::Memory::Instance()->IsValidGpuMapping(image.Address(), 16)) {
+            return ORBIS_HMD_ERROR_UNSUPPORTED_FEATURE;
+        }
+        std::copy_n(transforms[eye], 4, frame.uv_transform[eye].begin());
+        if (!std::ranges::all_of(frame.uv_transform[eye],
+                                 [](float value) { return std::isfinite(value); })) {
+            return ORBIS_OK;
+        }
+    }
+    presenter->SubmitVrFrame(frame);
     return ORBIS_OK;
 }
 
@@ -135,13 +232,22 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStartWideNearWithOverlay() {
     return ORBIS_OK;
 }
 
-s32 PS4_SYSV_ABI sceHmdReprojectionStartWithOverlay() {
-    LOG_ERROR(Lib_Hmd, "(STUBBED) called");
-    return ORBIS_OK;
+s32 PS4_SYSV_ABI sceHmdReprojectionStartWithOverlay(const OrbisHmdReprojectionRenderParam* param,
+                                                    const OrbisHmdReprojectionPose* pose,
+                                                    u64 frame_number,
+                                                    const OrbisHmdReprojectionRenderParam* overlay,
+                                                    u32 flags) {
+    return sceHmdReprojectionStart(param, pose, frame_number, flags);
 }
 
 s32 PS4_SYSV_ABI sceHmdReprojectionStop() {
-    LOG_ERROR(Lib_Hmd, "(STUBBED) called");
+    std::scoped_lock lock{g_reprojection_mutex};
+    if (!g_initialized) {
+        return ORBIS_HMD_ERROR_REPROJECTION_NOT_INITIALIZED;
+    }
+    if (presenter) {
+        presenter->StopVr();
+    }
     return ORBIS_OK;
 }
 
@@ -161,7 +267,14 @@ s32 PS4_SYSV_ABI sceHmdReprojectionUnsetCallback() {
 }
 
 s32 PS4_SYSV_ABI sceHmdReprojectionUnsetDisplayBuffers() {
-    LOG_ERROR(Lib_Hmd, "(STUBBED) called");
+    std::scoped_lock lock{g_reprojection_mutex};
+    if (!g_initialized) {
+        return ORBIS_HMD_ERROR_REPROJECTION_NOT_INITIALIZED;
+    }
+    if (presenter) {
+        presenter->StopVr();
+    }
+    g_buffers_set = false;
     return ORBIS_OK;
 }
 
