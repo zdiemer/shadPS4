@@ -1192,6 +1192,23 @@ void Liverpool::SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb) {
     submit_cv.notify_one();
 }
 
+Liverpool::Task Liverpool::ProcessGfxCallback(Common::UniqueFunction<void> callback) {
+    callback();
+    co_return;
+}
+
+void Liverpool::SubmitGfxCallback(Common::UniqueFunction<void> callback) {
+    auto& queue = mapped_queues[GfxQueueId];
+    auto task = ProcessGfxCallback(std::move(callback));
+    {
+        std::scoped_lock lock{queue.m_access};
+        queue.submits.emplace(task.handle);
+    }
+    std::scoped_lock lock{submit_mutex};
+    ++num_submits;
+    submit_cv.notify_one();
+}
+
 void Liverpool::SubmitAsc(u32 gnm_vqid, std::span<const u32> acb) {
     ASSERT_MSG(gnm_vqid > 0 && gnm_vqid < NumTotalQueues, "Invalid virtual ASC queue index");
     auto& queue = mapped_queues[gnm_vqid];
