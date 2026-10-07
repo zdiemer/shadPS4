@@ -944,9 +944,9 @@ void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
                         const auto& uv = layers[layer]->uv_transform[eye];
                         const std::array bounds{
                             uv[2] + std::tan(fovs[eye].left) * uv[0],
-                            uv[3] + std::tan(fovs[eye].up) * uv[1],
+                            uv[3] - std::tan(fovs[eye].up) * uv[1],
                             uv[2] + std::tan(fovs[eye].right) * uv[0],
-                            uv[3] + std::tan(fovs[eye].down) * uv[1],
+                            uv[3] - std::tan(fovs[eye].down) * uv[1],
                         };
                         vr_copy_pass.Render(cmdbuf, source_views[layer][eye], *target_views[eye],
                                             sizes[eye], bounds, layer > 0);
