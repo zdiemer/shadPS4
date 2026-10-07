@@ -93,6 +93,8 @@ struct OpenXRContext::Impl {
     XrSpace local_space{XR_NULL_HANDLE};
     XrSpace view_space{XR_NULL_HANDLE};
     XrSessionState session_state{XR_SESSION_STATE_UNKNOWN};
+    bool user_presence_supported{};
+    bool user_present{true};
     std::atomic<bool> session_running{};
     struct EyeSwapchain {
         XrSwapchain handle{XR_NULL_HANDLE};
@@ -176,6 +178,12 @@ OpenXRContext::OpenXRContext() {
     if (frame_profile) {
         enabled_extensions.push_back("XR_VALVE_frame_controller_interaction");
     }
+    const bool user_presence_extension = std::ranges::any_of(extensions, [](const auto& extension) {
+        return std::strcmp(extension.extensionName, XR_EXT_USER_PRESENCE_EXTENSION_NAME) == 0;
+    });
+    if (user_presence_extension) {
+        enabled_extensions.push_back(XR_EXT_USER_PRESENCE_EXTENSION_NAME);
+    }
 #ifdef _WIN32
     const char* time_extension = XR_KHR_WIN32_CONVERT_PERFORMANCE_COUNTER_TIME_EXTENSION_NAME;
 #else
@@ -222,6 +230,16 @@ OpenXRContext::OpenXRContext() {
         LOG_WARNING(Render_Vulkan, "No OpenXR headset is available");
         return;
     }
+    if (user_presence_extension) {
+        XrSystemUserPresencePropertiesEXT presence{XR_TYPE_SYSTEM_USER_PRESENCE_PROPERTIES_EXT};
+        XrSystemProperties properties{XR_TYPE_SYSTEM_PROPERTIES};
+        properties.next = &presence;
+        if (XR_SUCCEEDED(xrGetSystemProperties(context->instance, context->system, &properties))) {
+            context->user_presence_supported = presence.supportsUserPresence == XR_TRUE;
+        }
+    }
+    context->user_present = !context->user_presence_supported;
+    LOG_INFO(Render_Vulkan, "OpenXR user presence sensing: {}", context->user_presence_supported);
 
     const auto get_instance_extensions = LoadFunction<PFN_xrGetVulkanInstanceExtensionsKHR>(
         context->instance, "xrGetVulkanInstanceExtensionsKHR");
@@ -615,6 +633,7 @@ void OpenXRContext::Update() {
             std::scoped_lock stereo_lock{impl->stereo_mutex};
             impl->session_state = changed.state;
             if (changed.state == XR_SESSION_STATE_READY) {
+                impl->user_present = !impl->user_presence_supported;
                 XrSessionBeginInfo begin_info{XR_TYPE_SESSION_BEGIN_INFO};
                 begin_info.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
                 impl->session_running = XR_SUCCEEDED(xrBeginSession(impl->session, &begin_info));
@@ -632,8 +651,19 @@ void OpenXRContext::Update() {
                 .connected = changed.state != XR_SESSION_STATE_EXITING &&
                              changed.state != XR_SESSION_STATE_LOSS_PENDING,
                 .session_running = impl->session_running,
-                .mounted = changed.state == XR_SESSION_STATE_FOCUSED,
+                .mounted = impl->session_running && impl->user_present,
             });
+        } else if (event.type == XR_TYPE_EVENT_DATA_USER_PRESENCE_CHANGED_EXT &&
+                   impl->user_presence_supported) {
+            const auto& changed =
+                *reinterpret_cast<const XrEventDataUserPresenceChangedEXT*>(&event);
+            if (changed.session == impl->session) {
+                impl->user_present = changed.isUserPresent == XR_TRUE;
+                auto state = Input::Vr::GetDeviceState();
+                state.mounted = impl->session_running && impl->user_present;
+                Input::Vr::SetDeviceState(state);
+                LOG_INFO(Render_Vulkan, "OpenXR user present: {}", impl->user_present);
+            }
         } else if (event.type == XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING) {
             std::scoped_lock stereo_lock{impl->stereo_mutex};
             impl->session_running = false;
@@ -670,14 +700,14 @@ void OpenXRContext::Update() {
     Input::Vr::DeviceState state{
         .connected = true,
         .session_running = true,
-        .mounted = impl->session_state == XR_SESSION_STATE_FOCUSED,
+        .mounted = impl->user_present,
         .sample_time = std::chrono::steady_clock::now(),
     };
     if (const auto current = impl->Locate(state.sample_time)) {
         state = *current;
     }
     if (impl->input) {
-        impl->input->Sync(state.mounted, state);
+        impl->input->Sync(impl->session_state == XR_SESSION_STATE_FOCUSED, state);
         impl->input->Locate(impl->local_space, frame_state.predictedDisplayTime, state);
     }
     Input::Vr::SetDeviceState(state);
