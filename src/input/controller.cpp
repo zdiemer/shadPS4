@@ -16,6 +16,7 @@
 #include "core/libraries/system/userservice.h"
 #include "core/user_settings.h"
 #include "input/controller.h"
+#include "input/vr_state.h"
 
 namespace Input {
 
@@ -58,11 +59,95 @@ void CalculateOrientation(const Libraries::Pad::OrbisFVector3& angular_velocity,
 
 } // namespace
 
-GameController::GameController() : m_states_queue(64) {}
+GameController::GameController(bool receive_vr_input_)
+    : receive_vr_input{receive_vr_input_}, m_states_queue(64) {}
+
+State GameController::GetStateLocked() const {
+    State state = m_state;
+    if (!receive_vr_input) {
+        return state;
+    }
+    const auto vr = Vr::GetDeviceState();
+    if (!vr.session_running || !vr.mounted) {
+        return state;
+    }
+    using Vr::ControllerButton;
+    constexpr std::array button_map{
+        OrbisPadButtonDataOffset::Cross,   OrbisPadButtonDataOffset::Circle,
+        OrbisPadButtonDataOffset::Square,  OrbisPadButtonDataOffset::Triangle,
+        OrbisPadButtonDataOffset::Options, OrbisPadButtonDataOffset::TouchPad,
+        OrbisPadButtonDataOffset::Up,      OrbisPadButtonDataOffset::Down,
+        OrbisPadButtonDataOffset::Left,    OrbisPadButtonDataOffset::Right,
+    };
+    for (size_t hand = 0; hand < vr.controllers.size(); ++hand) {
+        const auto& controller = vr.controllers[hand];
+        if (!controller.active) {
+            continue;
+        }
+        state.connected = true;
+        state.connected_count = std::max<u8>(state.connected_count, 1);
+        const auto pressed = [&](ControllerButton button) {
+            return (controller.buttons & std::to_underlying(button)) != 0;
+        };
+        for (size_t button = 0; button < button_map.size(); ++button) {
+            if (controller.buttons & (1u << button)) {
+                state.OnButton(button_map[button], true);
+            }
+        }
+        if (pressed(ControllerButton::Select)) {
+            state.OnButton(OrbisPadButtonDataOffset::Cross, true);
+        }
+        if (pressed(ControllerButton::FacePad)) {
+            const auto& stick = controller.stick;
+            const auto button = std::abs(stick[0]) > std::abs(stick[1])
+                                    ? (stick[0] > 0.0f ? OrbisPadButtonDataOffset::Circle
+                                                       : OrbisPadButtonDataOffset::Square)
+                                    : (stick[1] > 0.0f ? OrbisPadButtonDataOffset::Triangle
+                                                       : OrbisPadButtonDataOffset::Cross);
+            state.OnButton(button, true);
+        }
+        if (pressed(ControllerButton::Shoulder) || controller.squeeze > 0.5f) {
+            state.OnButton(hand == 0 ? OrbisPadButtonDataOffset::L1 : OrbisPadButtonDataOffset::R1,
+                           true);
+        }
+        if (pressed(ControllerButton::Stick)) {
+            state.OnButton(hand == 0 ? OrbisPadButtonDataOffset::L3 : OrbisPadButtonDataOffset::R3,
+                           true);
+        }
+        if (controller.trigger > 0.5f) {
+            state.OnButton(hand == 0 ? OrbisPadButtonDataOffset::L2 : OrbisPadButtonDataOffset::R2,
+                           true);
+        }
+        const size_t stick_axis = hand * 2;
+        for (size_t axis = 0; axis < controller.stick.size(); ++axis) {
+            if (std::abs(controller.stick[axis]) > 0.1f) {
+                const float value = controller.stick[axis] * (axis == 0 ? 1.0f : -1.0f);
+                state.axes[stick_axis + axis] =
+                    std::clamp(static_cast<int>((value + 1.0f) * 127.5f), 0, 255);
+            }
+        }
+        const size_t trigger_axis = std::to_underlying(Axis::TriggerLeft) + hand;
+        state.axes[trigger_axis] =
+            std::max(state.axes[trigger_axis],
+                     std::clamp(static_cast<int>(controller.trigger * 255.0f), 0, 255));
+    }
+    const auto& motion = vr.controllers[1].active ? vr.controllers[1] : vr.controllers[0];
+    if (motion.active && motion.orientation_valid) {
+        const auto q = Vr::RelativeOrientation(motion.grip_pose.orientation, vr_orientation_origin);
+        state.orientation = {q[0], q[1], q[2], q[3]};
+        const auto gravity = Vr::RotateToLocal(motion.grip_pose.orientation, {0.0f, 9.81f, 0.0f});
+        state.acceleration = {gravity[0], gravity[1], gravity[2]};
+    }
+    if (motion.active && motion.orientation_valid && motion.angular_velocity_valid) {
+        const auto v = Vr::RotateToLocal(motion.grip_pose.orientation, motion.angular_velocity);
+        state.angularVelocity = {v[0], v[1], v[2]};
+    }
+    return state;
+}
 
 State GameController::ReadState() {
     std::lock_guard lock{m_state_mutex};
-    return m_state;
+    return GetStateLocked();
 }
 
 int GameController::ReadStates(State* states, int states_num) {
@@ -71,15 +156,16 @@ int GameController::ReadStates(State* states, int states_num) {
         return 0;
     }
 
-    if (!m_state.connected) {
-        states[0] = m_state;
+    const State current = GetStateLocked();
+    if (!current.connected) {
+        states[0] = current;
         return 1;
     }
 
     if (states_num == 1) {
         // Retained history can make a later multi-sample read return up to 64 stale reports, so
         // mixed single- and multi-sample reads require dedicated tests.
-        states[0] = m_state;
+        states[0] = current;
         return 1;
     }
 
@@ -124,6 +210,13 @@ void GameController::PollState() {
 
 void GameController::ResetOrientation() {
     std::lock_guard lock{m_state_mutex};
+    if (receive_vr_input) {
+        const auto vr = Vr::GetDeviceState();
+        const auto& motion = vr.controllers[1].active ? vr.controllers[1] : vr.controllers[0];
+        vr_orientation_origin = motion.active && motion.orientation_valid
+                                    ? motion.grip_pose.orientation
+                                    : std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f};
+    }
     m_state.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
     m_last_orientation_update = 0;
     PushStateLocked();
@@ -212,7 +305,7 @@ void GameController::PushStateLocked(u64 timestamp) {
     m_state.time = timestamp;
     m_state.touch_time_since_held_down =
         m_touch_down_timestamp == 0 ? 0 : timestamp - m_touch_down_timestamp;
-    m_states_queue.Push(m_state);
+    m_states_queue.Push(GetStateLocked());
 }
 
 void GameController::SetLightBarRGB(u8 const r, u8 const g, u8 const b) {

@@ -85,7 +85,7 @@ class GameController {
     friend class GameControllers;
 
 public:
-    GameController();
+    explicit GameController(bool receive_vr_input = false);
     virtual ~GameController() = default;
     void ConnectController(SDL_Gamepad* pad);
     void DisconnectController();
@@ -111,6 +111,9 @@ public:
     SDL_Gamepad* m_sdl_gamepad = nullptr;
 
 private:
+    State GetStateLocked() const;
+    bool receive_vr_input{};
+    std::array<float, 4> vr_orientation_origin{0.0f, 0.0f, 0.0f, 1.0f};
     // m_state_mutex must be held by the caller.
     void PushStateLocked(u64 timestamp = 0);
     void UpdateOrientationLocked(u64 timestamp);
@@ -132,7 +135,7 @@ class GameControllers {
 
 public:
     GameControllers()
-        : controllers({new GameController(), new GameController(), new GameController(),
+        : controllers({new GameController(true), new GameController(), new GameController(),
                        new GameController(), new GameController()}) {};
     virtual ~GameControllers() = default;
     GameController* operator[](const size_t& i) const {

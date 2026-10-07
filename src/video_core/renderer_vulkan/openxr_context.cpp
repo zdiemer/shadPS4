@@ -30,6 +30,7 @@
 #endif
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
+#include "video_core/renderer_vulkan/openxr_input.h"
 #endif
 
 namespace Vulkan {
@@ -104,6 +105,7 @@ struct OpenXRContext::Impl {
     bool stereo_ready{};
     std::mutex frame_callback_mutex;
     std::function<void(bool)> frame_callback;
+    std::unique_ptr<OpenXRInput> input;
 
     bool CreateSwapchains();
     PFN_xrGetVulkanGraphicsDeviceKHR get_graphics_device{};
@@ -121,6 +123,7 @@ struct OpenXRContext::Impl {
     ~Impl() {
         Input::Vr::SetTrackingProvider({});
         Input::Vr::SetDeviceState({});
+        input.reset();
         for (const auto& swapchain : swapchains) {
             if (swapchain.handle != XR_NULL_HANDLE) {
                 xrDestroySwapchain(swapchain.handle);
@@ -167,14 +170,22 @@ OpenXRContext::OpenXRContext() {
 
     auto context = std::make_unique<Impl>();
     std::vector<const char*> enabled_extensions{XR_KHR_VULKAN_ENABLE_EXTENSION_NAME};
+    const bool frame_profile = std::ranges::any_of(extensions, [](const auto& extension) {
+        return std::strcmp(extension.extensionName, "XR_VALVE_frame_controller_interaction") == 0;
+    });
+    if (frame_profile) {
+        enabled_extensions.push_back("XR_VALVE_frame_controller_interaction");
+    }
 #ifdef _WIN32
     const char* time_extension = XR_KHR_WIN32_CONVERT_PERFORMANCE_COUNTER_TIME_EXTENSION_NAME;
 #else
     const char* time_extension = XR_KHR_CONVERT_TIMESPEC_TIME_EXTENSION_NAME;
 #endif
-    if (std::ranges::any_of(extensions, [time_extension](const auto& extension) {
+    const bool time_supported =
+        std::ranges::any_of(extensions, [time_extension](const auto& extension) {
             return std::strcmp(extension.extensionName, time_extension) == 0;
-        })) {
+        });
+    if (time_supported) {
         enabled_extensions.push_back(time_extension);
     }
     XrInstanceCreateInfo create_info{XR_TYPE_INSTANCE_CREATE_INFO};
@@ -190,7 +201,7 @@ OpenXRContext::OpenXRContext() {
                     static_cast<s32>(instance_result));
         return;
     }
-    if (enabled_extensions.size() > 1) {
+    if (time_supported) {
 #ifdef _WIN32
         context->convert_time = LoadFunction<PFN_xrConvertWin32PerformanceCounterToTimeKHR>(
             context->instance, "xrConvertWin32PerformanceCounterToTimeKHR");
@@ -200,6 +211,11 @@ OpenXRContext::OpenXRContext() {
 #endif
     }
 
+    context->input = std::make_unique<OpenXRInput>(context->instance);
+    if (!context->input->Initialize(frame_profile)) {
+        LOG_WARNING(Render_Vulkan, "Failed to initialize OpenXR controller actions");
+        context->input.reset();
+    }
     XrSystemGetInfo system_info{XR_TYPE_SYSTEM_GET_INFO};
     system_info.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
     if (XR_FAILED(xrGetSystem(context->instance, &system_info, &context->system))) {
@@ -307,6 +323,10 @@ bool OpenXRContext::CreateSession(VkInstance instance, VkPhysicalDevice physical
     if (XR_FAILED(result)) {
         LOG_WARNING(Render_Vulkan, "Failed to create OpenXR session: {}", static_cast<s32>(result));
         return false;
+    }
+    if (impl->input && !impl->input->Attach(impl->session)) {
+        LOG_WARNING(Render_Vulkan, "Failed to attach OpenXR controller actions");
+        impl->input.reset();
     }
     XrReferenceSpaceCreateInfo space_info{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
     space_info.poseInReferenceSpace.orientation.w = 1.0f;
@@ -511,11 +531,15 @@ OpenXRContext::Impl::Locate(std::chrono::steady_clock::time_point time) {
                                .connected = snapshot.connected,
                                .session_running = snapshot.session_running,
                                .mounted = snapshot.mounted,
+                               .controllers = snapshot.controllers,
                                .sample_time = time,
                            });
 }
 
 Input::Vr::DeviceState OpenXRContext::Impl::Locate(XrTime time, Input::Vr::DeviceState state) {
+    if (input) {
+        input->Locate(local_space, time, state);
+    }
     XrSpaceVelocity velocity{XR_TYPE_SPACE_VELOCITY};
     XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
     location.next = &velocity;
@@ -651,6 +675,10 @@ void OpenXRContext::Update() {
     };
     if (const auto current = impl->Locate(state.sample_time)) {
         state = *current;
+    }
+    if (impl->input) {
+        impl->input->Sync(state.mounted, state);
+        impl->input->Locate(impl->local_space, frame_state.predictedDisplayTime, state);
     }
     Input::Vr::SetDeviceState(state);
     XrFrameEndInfo end_info{XR_TYPE_FRAME_END_INFO};
