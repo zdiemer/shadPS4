@@ -4,6 +4,8 @@
 #pragma once
 
 #include <cstring>
+#include <tuple>
+#include <type_traits>
 #include "common/types.h"
 #ifdef _WIN32
 #include <malloc.h>
@@ -47,13 +49,43 @@ Tcb* GetTcbBase();
 /// Makes sure TLS is initialized for the thread before entering guest.
 void InitializeTLS();
 
+void* PS4_SYSV_ABI GetHleStack();
+void PS4_SYSV_ABI RunOnHleStack(void* PS4_SYSV_ABI (*func)(void*), void* arg, void* stack);
+
 template <auto f>
 struct HostCallWrapperImpl;
 
 template <class ReturnType, class... Args, PS4_SYSV_ABI ReturnType (*func)(Args...)>
 struct HostCallWrapperImpl<func> {
-    static ReturnType PS4_SYSV_ABI wrap(Args... args) {
+    [[gnu::noinline]] static ReturnType PS4_SYSV_ABI Call(Args... args) {
         return func(args...);
+    }
+
+    struct CallContext {
+        std::tuple<Args...> args;
+        std::conditional_t<std::is_void_v<ReturnType>, u8, ReturnType> result{};
+    };
+
+    static void* PS4_SYSV_ABI Invoke(void* arg) {
+        auto& context = *static_cast<CallContext*>(arg);
+        if constexpr (std::is_void_v<ReturnType>) {
+            std::apply(Call, context.args);
+        } else {
+            context.result = std::apply(Call, context.args);
+        }
+        return nullptr;
+    }
+
+    static ReturnType PS4_SYSV_ABI wrap(Args... args) {
+        if (void* stack = GetHleStack()) {
+            CallContext context{{args...}};
+            RunOnHleStack(Invoke, &context, stack);
+            if constexpr (!std::is_void_v<ReturnType>) {
+                return context.result;
+            }
+        } else {
+            return Call(args...);
+        }
     }
 };
 
