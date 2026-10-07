@@ -117,8 +117,8 @@ s32 PS4_SYSV_ABI sceHmdReprojectionQueryOnionBuffSize();
 s32 PS4_SYSV_ABI sceHmdReprojectionSetCallback();
 s32 PS4_SYSV_ABI sceHmdReprojectionSetDisplayBuffers(s32 handle, s32 start, s32 count, u32 flags);
 s32 PS4_SYSV_ABI sceHmdReprojectionSetOutputMinColor();
-s32 PS4_SYSV_ABI sceHmdReprojectionSetUserEventEnd();
-s32 PS4_SYSV_ABI sceHmdReprojectionSetUserEventStart();
+s32 PS4_SYSV_ABI sceHmdReprojectionSetUserEventEnd(s64 queue, s32 id);
+s32 PS4_SYSV_ABI sceHmdReprojectionSetUserEventStart(s64 queue, s32 id);
 s32 PS4_SYSV_ABI sceHmdReprojectionStart(const OrbisHmdReprojectionRenderParam* param,
                                          const OrbisHmdReprojectionPose* pose, u64 frame_number,
                                          u32 flags);
