@@ -6,6 +6,7 @@
 #include <atomic>
 #include <condition_variable>
 
+#include "common/unique_function.h"
 #include "core/libraries/videoout/buffer.h"
 #include "imgui/imgui_texture.h"
 #include "video_core/renderer_vulkan/host_passes/fsr_pass.h"
@@ -107,7 +108,7 @@ public:
     Frame* PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& attribute,
                         VAddr cpu_address);
 
-    void SubmitVrFrame(VideoCore::VrFrame frame);
+    void SubmitVrFrame(VideoCore::VrFrame frame, Common::UniqueFunction<void, bool> notify = {});
     void StopVr();
 
     Frame* PrepareBlankFrame(bool present_thread);

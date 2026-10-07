@@ -5,10 +5,12 @@
 #include <cmath>
 #include <cstring>
 #include <mutex>
+#include <optional>
 #include "common/logging/log.h"
 #include "core/libraries/error_codes.h"
 #include "core/libraries/hmd/hmd.h"
 #include "core/libraries/hmd/hmd_error.h"
+#include "core/libraries/kernel/equeue.h"
 #include "core/libraries/libs.h"
 #include "core/libraries/videoout/video_out.h"
 #include "core/memory.h"
@@ -23,6 +25,58 @@ namespace {
 std::mutex g_reprojection_mutex;
 bool g_initialized{};
 bool g_buffers_set{};
+u64 g_generation{};
+u64 g_event_revision{};
+
+struct UserEvent {
+    Kernel::OrbisKernelEqueue queue{};
+    s32 id{};
+    u64 revision{};
+};
+
+std::optional<UserEvent> g_start_event;
+std::optional<UserEvent> g_end_event;
+
+s32 SetUserEvent(std::optional<UserEvent>& event, Kernel::OrbisKernelEqueue queue, s32 id) {
+    std::scoped_lock lock{g_reprojection_mutex};
+    if (!g_initialized) {
+        return ORBIS_HMD_ERROR_REPROJECTION_NOT_INITIALIZED;
+    }
+    if (event) {
+        return ORBIS_HMD_ERROR_REPROJECTION_RESOURCE_ALREADY_SET;
+    }
+    auto* equeue = Kernel::GetEqueue(queue);
+    if (!equeue || !equeue->EventExists(id, Kernel::OrbisKernelEvent::Filter::User)) {
+        return ORBIS_HMD_ERROR_PARAMETER_INVALID;
+    }
+    event = UserEvent{queue, id, ++g_event_revision};
+    return ORBIS_OK;
+}
+
+s32 ClearUserEvent(std::optional<UserEvent>& event) {
+    std::scoped_lock lock{g_reprojection_mutex};
+    if (!g_initialized) {
+        return ORBIS_HMD_ERROR_REPROJECTION_NOT_INITIALIZED;
+    }
+    if (!event) {
+        return ORBIS_HMD_ERROR_REPROJECTION_RESOURCE_NOT_SET;
+    }
+    event.reset();
+    return ORBIS_OK;
+}
+
+void NotifyUserEvent(u64 generation, bool start, u64 revision) {
+    std::scoped_lock lock{g_reprojection_mutex};
+    if (!g_initialized || generation != g_generation) {
+        return;
+    }
+    const auto& event = start ? g_start_event : g_end_event;
+    if (event && event->revision == revision) {
+        if (auto* equeue = Kernel::GetEqueue(event->queue)) {
+            equeue->TriggerEvent(event->id, Kernel::OrbisKernelEvent::Filter::User, nullptr);
+        }
+    }
+}
 
 s32 ReadLayer(const OrbisHmdReprojectionRenderParam* param, VideoCore::VrLayer& layer) {
     const std::array pointers{param->left_image, param->right_image};
@@ -98,7 +152,12 @@ s32 SubmitReprojection(const OrbisHmdReprojectionRenderParam* param,
             return ORBIS_OK;
         }
     }
-    presenter->SubmitVrFrame(frame);
+    presenter->SubmitVrFrame(
+        frame,
+        [generation = g_generation, start_revision = g_start_event ? g_start_event->revision : 0,
+         end_revision = g_end_event ? g_end_event->revision : 0](bool start) {
+            NotifyUserEvent(generation, start, start ? start_revision : end_revision);
+        });
     return ORBIS_OK;
 }
 
@@ -115,13 +174,11 @@ s32 PS4_SYSV_ABI sceHmdReprojectionAddDisplayBuffer() {
 }
 
 s32 PS4_SYSV_ABI sceHmdReprojectionClearUserEventEnd() {
-    LOG_ERROR(Lib_Hmd, "(STUBBED) called");
-    return ORBIS_OK;
+    return ClearUserEvent(g_end_event);
 }
 
 s32 PS4_SYSV_ABI sceHmdReprojectionClearUserEventStart() {
-    LOG_ERROR(Lib_Hmd, "(STUBBED) called");
-    return ORBIS_OK;
+    return ClearUserEvent(g_start_event);
 }
 
 s32 PS4_SYSV_ABI sceHmdReprojectionDebugGetLastInfo() {
@@ -144,6 +201,9 @@ s32 PS4_SYSV_ABI sceHmdReprojectionFinalize() {
     }
     g_initialized = false;
     g_buffers_set = false;
+    ++g_generation;
+    g_start_event.reset();
+    g_end_event.reset();
     return ORBIS_OK;
 }
 
@@ -213,14 +273,12 @@ s32 PS4_SYSV_ABI sceHmdReprojectionSetOutputMinColor() {
     return ORBIS_OK;
 }
 
-s32 PS4_SYSV_ABI sceHmdReprojectionSetUserEventEnd() {
-    LOG_ERROR(Lib_Hmd, "(STUBBED) called");
-    return ORBIS_OK;
+s32 PS4_SYSV_ABI sceHmdReprojectionSetUserEventEnd(s64 queue, s32 id) {
+    return SetUserEvent(g_end_event, queue, id);
 }
 
-s32 PS4_SYSV_ABI sceHmdReprojectionSetUserEventStart() {
-    LOG_ERROR(Lib_Hmd, "(STUBBED) called");
-    return ORBIS_OK;
+s32 PS4_SYSV_ABI sceHmdReprojectionSetUserEventStart(s64 queue, s32 id) {
+    return SetUserEvent(g_start_event, queue, id);
 }
 
 s32 PS4_SYSV_ABI sceHmdReprojectionStart(const OrbisHmdReprojectionRenderParam* param,
@@ -275,6 +333,7 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStop() {
     if (!g_initialized) {
         return ORBIS_HMD_ERROR_REPROJECTION_NOT_INITIALIZED;
     }
+    ++g_generation;
     if (presenter) {
         presenter->StopVr();
     }
@@ -301,6 +360,7 @@ s32 PS4_SYSV_ABI sceHmdReprojectionUnsetDisplayBuffers() {
     if (!g_initialized) {
         return ORBIS_HMD_ERROR_REPROJECTION_NOT_INITIALIZED;
     }
+    ++g_generation;
     if (presenter) {
         presenter->StopVr();
     }

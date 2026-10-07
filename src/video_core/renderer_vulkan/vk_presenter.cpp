@@ -837,11 +837,11 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     return frame;
 }
 
-void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
+void Presenter::SubmitVrFrame(VideoCore::VrFrame frame, Common::UniqueFunction<void, bool> notify) {
     if (vr_frame_pending.exchange(true)) {
         return;
     }
-    liverpool->SubmitGfxCallback([this, frame] {
+    liverpool->SubmitGfxCallback([this, frame, notify = std::move(notify)] {
         SCOPE_EXIT {
             vr_frame_pending = false;
         };
@@ -880,6 +880,9 @@ void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
         }
         const bool submitted =
             openxr->RenderStereo(poses, fovs, [&](const auto& targets, const auto& sizes) {
+                if (notify) {
+                    notify(true);
+                }
                 draw_scheduler.EndRendering();
                 std::array<std::array<vk::ImageView, 2>, 2> source_views{};
                 std::array<vk::UniqueImageView, 2> target_views{};
@@ -983,6 +986,9 @@ void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
                     }
                 }
                 draw_scheduler.Finish();
+                if (notify) {
+                    notify(false);
+                }
                 for (const auto& screenshot : screenshots) {
                     if (screenshot) {
                         SavePendingScreenshot(*screenshot);
