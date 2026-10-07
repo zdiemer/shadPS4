@@ -183,11 +183,7 @@ void Module::LoadModuleToMemory(u32& max_tls_index) {
     // Static patching rewrites the functions of the executable segments ahead of time. Initially
     // useful because Windows uses it for guest red-zone protection, and macOS to apply its CPU
     // patches, but now used on all OSes to patch 4-byte instructions
-#if defined(_WIN32)
-    const bool use_static_patching = WindowsGuestRedZoneProtection::IsStaticPatchingEnabled();
-#else
     constexpr bool use_static_patching = true;
-#endif
     std::vector<std::pair<VAddr, u64>> executable_segments;
     std::vector<uintptr_t> function_starts;
 #endif
