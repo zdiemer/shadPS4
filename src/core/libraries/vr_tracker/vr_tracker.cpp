@@ -5,8 +5,10 @@
 #include <chrono>
 #include <limits>
 #include <mutex>
+#include <optional>
 
 #include "common/logging/log.h"
+#include "core/libraries/camera/vr_camera.h"
 #include "core/libraries/error_codes.h"
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/libs.h"
@@ -22,6 +24,9 @@ namespace Libraries::VrTracker {
 
 static bool g_library_initialized = false;
 static std::mutex g_mutex;
+enum class FrameState { Idle, Submitted, Waited, Processed };
+static FrameState g_frame_state{FrameState::Idle};
+static std::optional<u64> g_camera_timestamp;
 static std::array<float, 4> g_relative_orientation{0.0f, 0.0f, 0.0f, 1.0f};
 static std::array<float, 4> g_pad_relative_orientation{0.0f, 0.0f, 0.0f, 1.0f};
 static std::array<std::array<float, 4>, 2> g_move_relative_orientation{
@@ -40,6 +45,24 @@ static s32 g_pad_handle = -1;
 static std::array<s32, 2> g_move_handles{-1, -1};
 static s32 g_gun_handle = -1;
 static s32 g_hmd_handle = -1;
+
+static s32 WaitForTrackingFrame() {
+    if (g_frame_state == FrameState::Idle) {
+        return ORBIS_VR_TRACKER_ERROR_NOT_EXECUTE_GPU_SUBMIT;
+    }
+    if (g_frame_state == FrameState::Submitted) {
+        g_frame_state = FrameState::Waited;
+    }
+    return ORBIS_OK;
+}
+
+static s32 ProcessTrackingFrame() {
+    if (g_frame_state == FrameState::Idle || g_frame_state == FrameState::Submitted) {
+        return ORBIS_VR_TRACKER_ERROR_NOT_EXECUTE_GPU_WAIT;
+    }
+    g_frame_state = FrameState::Processed;
+    return ORBIS_OK;
+}
 
 static OrbisVrTrackerPoseData ConvertPose(
     const Input::Vr::Pose& pose, bool relative,
@@ -105,6 +128,9 @@ s32 PS4_SYSV_ABI sceVrTrackerInit(const OrbisVrTrackerInitParam* param) {
         return ORBIS_VR_TRACKER_ERROR_ARGUMENT_INVALID;
     }
 
+    LOG_DEBUG(Lib_VrTracker, "Initialize size {}, profile {}, execution mode {}", param->size,
+              static_cast<s32>(param->profile), static_cast<s32>(param->execution_mode));
+
     OrbisVrTrackerInitParam normalized_param{};
     if (param->size == sizeof(OrbisVrTrackerInitParam144)) {
         const auto& supplied = *reinterpret_cast<const OrbisVrTrackerInitParam144*>(param);
@@ -140,6 +166,8 @@ s32 PS4_SYSV_ABI sceVrTrackerInit(const OrbisVrTrackerInitParam* param) {
 
     // Parameter checks are fairly thorough here.
     if (param->size != sizeof(OrbisVrTrackerInitParam) ||
+        (param->execution_mode != ORBIS_VR_TRACKER_EXECUTION_MODE_SERIAL &&
+         param->execution_mode != ORBIS_VR_TRACKER_EXECUTION_MODE_PARALLEL) ||
         // Check garlic memory parameters
         param->direct_memory_garlic == nullptr ||
         param->direct_memory_garlic_alignment != ORBIS_VR_TRACKER_MEMORY_ALIGNMENT ||
@@ -200,6 +228,8 @@ s32 PS4_SYSV_ABI sceVrTrackerInit(const OrbisVrTrackerInitParam* param) {
     // All initialization checks passed.
     LOG_WARNING(Lib_VrTracker, "PSVR camera processing is not implemented");
     g_library_initialized = true;
+    g_frame_state = FrameState::Idle;
+    g_camera_timestamp.reset();
     g_relative_orientation = {0.0f, 0.0f, 0.0f, 1.0f};
     g_pad_relative_orientation = {0.0f, 0.0f, 0.0f, 1.0f};
     g_move_relative_orientation.fill({0.0f, 0.0f, 0.0f, 1.0f});
@@ -276,8 +306,26 @@ s32 PS4_SYSV_ABI sceVrTrackerRegisterDeviceInternal(const OrbisVrTrackerDeviceTy
 }
 
 s32 PS4_SYSV_ABI sceVrTrackerCpuProcess(const OrbisVrTrackerCpuProcessParam* param) {
-    LOG_ERROR(Lib_VrTracker, "(STUBBED) called");
-    return ORBIS_OK;
+    std::scoped_lock lock{g_mutex};
+    if (!g_library_initialized) {
+        return ORBIS_VR_TRACKER_ERROR_NOT_INIT;
+    }
+    if (param == nullptr || param->size != sizeof(*param) ||
+        (param->operation_mode != ORBIS_VR_TRACKER_CPU_PROCESS_OPERATION_MODE_WHOLE &&
+         param->operation_mode != ORBIS_VR_TRACKER_CPU_PROCESS_OPERATION_MODE_HANDLE)) {
+        return ORBIS_VR_TRACKER_ERROR_ARGUMENT_INVALID;
+    }
+    if (param->operation_mode == ORBIS_VR_TRACKER_CPU_PROCESS_OPERATION_MODE_HANDLE) {
+        if (param->handle < 0) {
+            return ORBIS_VR_TRACKER_ERROR_ARGUMENT_INVALID;
+        }
+        if (param->handle != g_hmd_handle && param->handle != g_pad_handle &&
+            param->handle != g_gun_handle &&
+            std::ranges::find(g_move_handles, param->handle) == g_move_handles.end()) {
+            return ORBIS_VR_TRACKER_ERROR_DEVICE_NOT_REGISTERED;
+        }
+    }
+    return ProcessTrackingFrame();
 }
 
 s32 PS4_SYSV_ABI sceVrTrackerGetPlayAreaWarningInfo(OrbisVrTrackerPlayAreaWarningInfo* info) {
@@ -462,18 +510,62 @@ s32 PS4_SYSV_ABI sceVrTrackerGetTime(u64* time) {
 
 s32 PS4_SYSV_ABI sceVrTrackerGpuSubmit(const OrbisVrTrackerGpuSubmitParam* param) {
     std::scoped_lock lock{g_mutex};
-    LOG_ERROR(Lib_VrTracker, "(STUBBED) called");
     if (!g_library_initialized) {
+        LOG_DEBUG(Lib_VrTracker, "Tracking submission before initialization");
         return ORBIS_VR_TRACKER_ERROR_NOT_INIT;
     }
 
-    // Impossible to submit valid data here since sceCameraGetFrameData returns an error.
-    return ORBIS_VR_TRACKER_ERROR_ARGUMENT_INVALID;
+    constexpr auto legacy_size = offsetof(OrbisVrTrackerGpuSubmitParam, camera_frame_data) +
+                                 offsetof(Camera::OrbisCameraFrameData, pFramePointerListGarlic);
+    if (param == nullptr || (param->size != sizeof(*param) && param->size != legacy_size) ||
+        (param->pad_tracking_preference != ORBIS_VR_TRACKER_PREFERENCE_FAR_POSITION &&
+         param->pad_tracking_preference != ORBIS_VR_TRACKER_PREFERENCE_STABLE_POSITION) ||
+        (param->camera_meta_check_mode != ORBIS_VR_TRACKER_CAMERA_META_CHECK_ENABLE &&
+         param->camera_meta_check_mode != ORBIS_VR_TRACKER_CAMERA_META_CHECK_DISABLE) ||
+        (param->tracking_device_permit_type != ORBIS_VR_TRACKER_DEVICE_PERMIT_ALL &&
+         param->tracking_device_permit_type != ORBIS_VR_TRACKER_DEVICE_PERMIT_HMD_ONLY) ||
+        (param->robustness_level != ORBIS_VR_TRACKER_ROBUSTNESS_LEVEL_HIGH &&
+         param->robustness_level != ORBIS_VR_TRACKER_ROBUSTNESS_LEVEL_LOW &&
+         param->robustness_level != ORBIS_VR_TRACKER_ROBUSTNESS_LEVEL_MEDIUM &&
+         param->robustness_level != ORBIS_VR_TRACKER_ROBUSTNESS_LEVEL_LEGACY)) {
+        return ORBIS_VR_TRACKER_ERROR_ARGUMENT_INVALID;
+    }
+    const auto& frame = param->camera_frame_data;
+    if (frame.sizeThis != param->size - offsetof(OrbisVrTrackerGpuSubmitParam, camera_frame_data)) {
+        return ORBIS_VR_TRACKER_ERROR_ARGUMENT_INVALID;
+    }
+    if (!Camera::IsVrCameraActive() || !Input::Vr::GetDeviceState().session_running) {
+        LOG_DEBUG(Lib_VrTracker, "Tracking submission without an active virtual camera session");
+        return ORBIS_VR_TRACKER_ERROR_PLAYSTATION_CAMERA_NOT_CONNECTED;
+    }
+    for (u32 channel = 0; channel < Camera::ORBIS_CAMERA_MAX_DEVICE_NUM; ++channel) {
+        if (frame.status[channel] != 1) {
+            return ORBIS_VR_TRACKER_ERROR_INVALID_STATUS_OF_CAMERA_FRAME;
+        }
+        bool has_image = false;
+        for (u32 level = 0; level < Camera::ORBIS_CAMERA_MAX_FORMAT_LEVEL_NUM; ++level) {
+            has_image |= frame.pFramePointerList[channel][level] != nullptr &&
+                         frame.frameSize[channel][level] != 0;
+        }
+        if (!has_image) {
+            return ORBIS_VR_TRACKER_ERROR_INVALID_CAMERA_CONFIGURATION;
+        }
+    }
+    if (g_frame_state == FrameState::Submitted || g_frame_state == FrameState::Waited) {
+        return ORBIS_VR_TRACKER_ERROR_BUSY;
+    }
+    if (g_camera_timestamp && frame.meta.timestamp[0] <= *g_camera_timestamp) {
+        return ORBIS_VR_TRACKER_ERROR_ALREADY_PROCESSING_CAMERA_FRAME;
+    }
+    g_camera_timestamp = frame.meta.timestamp[0];
+    g_frame_state = FrameState::Submitted;
+    LOG_DEBUG(Lib_VrTracker, "Submitted virtual camera frame {}, timestamp {}", frame.meta.frame[0],
+              *g_camera_timestamp);
+    return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceVrTrackerGpuWait(const OrbisVrTrackerGpuWaitParam* param) {
     std::scoped_lock lock{g_mutex};
-    LOG_ERROR(Lib_VrTracker, "(STUBBED) called");
     if (!g_library_initialized) {
         return ORBIS_VR_TRACKER_ERROR_NOT_INIT;
     }
@@ -481,24 +573,32 @@ s32 PS4_SYSV_ABI sceVrTrackerGpuWait(const OrbisVrTrackerGpuWaitParam* param) {
         return ORBIS_VR_TRACKER_ERROR_ARGUMENT_INVALID;
     }
 
-    // Impossible to perform GPU submits
-    return ORBIS_VR_TRACKER_ERROR_NOT_EXECUTE_GPU_SUBMIT;
+    return WaitForTrackingFrame();
 }
 
 s32 PS4_SYSV_ABI sceVrTrackerGpuWaitAndCpuProcess() {
     std::scoped_lock lock{g_mutex};
-    LOG_ERROR(Lib_VrTracker, "(STUBBED) called");
     if (!g_library_initialized) {
         return ORBIS_VR_TRACKER_ERROR_NOT_INIT;
     }
 
-    // Impossible to perform GPU submits
-    return ORBIS_VR_TRACKER_ERROR_NOT_EXECUTE_GPU_SUBMIT;
+    const s32 result = WaitForTrackingFrame();
+    return result == ORBIS_OK ? ProcessTrackingFrame() : result;
 }
 
 s32 PS4_SYSV_ABI
 sceVrTrackerNotifyEndOfCpuProcess(const OrbisVrTrackerNotifyEndOfCpuProcessParam* param) {
-    LOG_ERROR(Lib_VrTracker, "(STUBBED) called");
+    std::scoped_lock lock{g_mutex};
+    if (!g_library_initialized) {
+        return ORBIS_VR_TRACKER_ERROR_NOT_INIT;
+    }
+    if (param == nullptr || param->size != sizeof(*param)) {
+        return ORBIS_VR_TRACKER_ERROR_ARGUMENT_INVALID;
+    }
+    if (g_frame_state != FrameState::Processed) {
+        return ORBIS_VR_TRACKER_ERROR_NOT_EXECUTE_CPU_PROCESS;
+    }
+    g_frame_state = FrameState::Idle;
     return ORBIS_OK;
 }
 
@@ -756,6 +856,8 @@ s32 PS4_SYSV_ABI sceVrTrackerTerm() {
         return ORBIS_VR_TRACKER_ERROR_NOT_INIT;
     }
     g_library_initialized = false;
+    g_frame_state = FrameState::Idle;
+    g_camera_timestamp.reset();
     g_hmd_handle = g_pad_handle = g_gun_handle = -1;
     g_move_handles.fill(-1);
     g_relative_orientation = {0.0f, 0.0f, 0.0f, 1.0f};
