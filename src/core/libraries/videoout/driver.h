@@ -7,6 +7,7 @@
 #include "common/polyfill_thread.h"
 #include "core/libraries/videoout/video_out.h"
 
+#include <atomic>
 #include <condition_variable>
 #include <mutex>
 #include <queue>
@@ -35,6 +36,11 @@ struct VideoOutPort {
     int prev_index = -1;
     bool is_open = false;
     bool is_hdr = false;
+    std::atomic<s64> vblank_period{};
+
+    std::chrono::nanoseconds GetVblankPeriod() const {
+        return std::chrono::nanoseconds{vblank_period.load()};
+    }
 
     s32 FindFreeGroup() const {
         s32 index = 0;
@@ -89,6 +95,7 @@ public:
     int UnregisterBuffers(VideoOutPort* port, s32 attributeIndex);
     int ChangeBufferAttribute(VideoOutPort* port, s32 bufferIndex,
                               const BufferAttribute* attribute);
+    int SetRefreshRate(VideoOutPort* port, u64 refresh_rate);
 
     bool SubmitFlip(VideoOutPort* port, s32 index, s64 flip_arg, bool is_eop = false);
 
@@ -110,13 +117,18 @@ private:
     void DrawLastFrame();  // Used when there is no flip request
     void SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_arg, bool is_eop = false);
     void PresentThread(std::stop_token token);
+    void VblankThread(VideoOutPort* port, std::stop_token token);
 
     std::mutex mutex;
+    std::condition_variable_any present_cv;
+    u64 present_tick{};
     VideoOutPort main_port{};
     VideoOutPort social_port{};
     std::jthread present_thread;
     std::array<std::queue<Request>, 2> requests;
     u32 next_request_port{};
+    std::array<u64, 2> last_flip_vblank{~u64{}, ~u64{}};
+    std::array<std::jthread, 2> vblank_threads;
 };
 
 } // namespace Libraries::VideoOut
