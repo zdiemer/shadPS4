@@ -90,6 +90,8 @@ struct ControllerSample {
 
 DeviceState GetDeviceState();
 void SetDeviceState(const DeviceState& state);
+bool SetControllerVibration(std::size_t hand, std::uint8_t intensity);
+std::array<std::uint8_t, 2> GetControllerVibration();
 std::vector<ControllerSample> GetControllerHistory(std::size_t hand);
 using TrackingProvider =
     std::function<std::optional<DeviceState>(std::chrono::steady_clock::time_point)>;

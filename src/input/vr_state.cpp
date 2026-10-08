@@ -12,6 +12,7 @@ namespace {
 
 std::mutex g_mutex;
 DeviceState g_state;
+std::array<std::uint8_t, 2> g_controller_vibration{};
 std::deque<std::array<ControllerSample, 2>> g_controller_history;
 std::uint64_t g_controller_sequence{};
 std::mutex g_provider_mutex;
@@ -26,6 +27,11 @@ DeviceState GetDeviceState() {
 
 void SetDeviceState(const DeviceState& state) {
     std::scoped_lock lock{g_mutex};
+    for (size_t hand = 0; hand < g_controller_vibration.size(); ++hand) {
+        if (!state.session_running || !state.mounted || !state.controllers[hand].active) {
+            g_controller_vibration[hand] = 0;
+        }
+    }
     if (!state.session_running) {
         g_controller_history.clear();
         g_controller_sequence = 0;
@@ -41,6 +47,21 @@ void SetDeviceState(const DeviceState& state) {
         }
     }
     g_state = state;
+}
+
+bool SetControllerVibration(std::size_t hand, std::uint8_t intensity) {
+    std::scoped_lock lock{g_mutex};
+    if (hand >= g_state.controllers.size() || !g_state.session_running || !g_state.mounted ||
+        !g_state.controllers[hand].active) {
+        return false;
+    }
+    g_controller_vibration[hand] = intensity;
+    return true;
+}
+
+std::array<std::uint8_t, 2> GetControllerVibration() {
+    std::scoped_lock lock{g_mutex};
+    return g_controller_vibration;
 }
 
 std::vector<ControllerSample> GetControllerHistory(std::size_t hand) {
