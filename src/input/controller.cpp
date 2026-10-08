@@ -131,6 +131,9 @@ State GameController::GetStateLocked() const {
             std::max(state.axes[trigger_axis],
                      std::clamp(static_cast<int>(controller.trigger * 255.0f), 0, 255));
     }
+    if (has_motion_sensors) {
+        return state;
+    }
     const auto& motion = vr.controllers[1].active ? vr.controllers[1] : vr.controllers[0];
     if (motion.active && motion.orientation_valid) {
         const auto q = Vr::RelativeOrientation(motion.grip_pose.orientation, vr_orientation_origin);
@@ -248,6 +251,9 @@ void GameController::SetTouchpadState(int touch_index, bool touch_down, float x,
 void GameController::ConnectController(SDL_Gamepad* pad) {
     std::lock_guard lock{m_state_mutex};
     m_sdl_gamepad = pad;
+    has_motion_sensors =
+        pad && EmulatorSettings.IsMotionControlsEnabled() &&
+        (SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO) || SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL));
     if (override_colour) {
         SetLightBarRGB({});
     }
@@ -267,6 +273,7 @@ void GameController::DisconnectController() {
     std::lock_guard lock{m_state_mutex};
     m_states_queue.Clear();
     m_sdl_gamepad = nullptr;
+    has_motion_sensors = false;
 
     const u8 connected_count = m_state.connected_count;
     m_state = {};
