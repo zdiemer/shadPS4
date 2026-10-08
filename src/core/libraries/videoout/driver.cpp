@@ -487,7 +487,7 @@ void VideoOutDriver::VblankThread(VideoOutPort* port, std::stop_token token) {
         }
         timer.Start();
         if (!DebugState.IsGuestThreadsPaused()) {
-            Hmd::NotifyReprojection(handle, true);
+            Hmd::NotifyReprojection(handle, true, port == &main_port);
             {
                 std::scoped_lock lock{port->vo_mutex};
                 auto& vblank_status = port->vblank_status;
@@ -508,7 +508,7 @@ void VideoOutDriver::VblankThread(VideoOutPort* port, std::stop_token token) {
                 vblank_status.tsc = Libraries::Kernel::sceKernelReadTsc();
                 port->vblank_cv.notify_all();
             }
-            Hmd::NotifyReprojection(handle, false);
+            Hmd::NotifyReprojection(handle, false, port == &main_port);
         }
         {
             std::scoped_lock lock{mutex};

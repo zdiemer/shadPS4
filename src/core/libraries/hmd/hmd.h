@@ -11,7 +11,8 @@ class SymbolsResolver;
 }
 
 namespace Libraries::Hmd {
-void NotifyReprojection(s32 handle, bool start);
+void NotifyReprojection(s32 handle, bool start, bool primary_output);
+void ResetReprojection();
 
 void BindDeviceToUser(Libraries::UserService::OrbisUserServiceUserId user_id);
 

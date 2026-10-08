@@ -35,11 +35,19 @@ struct UserEvent {
 std::optional<UserEvent> g_start_event;
 std::optional<UserEvent> g_end_event;
 
+void ResetReprojectionState() {
+    if (presenter) {
+        presenter->StopVr();
+    }
+    g_initialized = false;
+    g_buffers_set = false;
+    g_display_handle = 0;
+    g_start_event.reset();
+    g_end_event.reset();
+}
+
 s32 SetUserEvent(std::optional<UserEvent>& event, Kernel::OrbisKernelEqueue queue, s32 id) {
     std::scoped_lock lock{g_reprojection_mutex};
-    if (!g_initialized) {
-        return ORBIS_HMD_ERROR_REPROJECTION_NOT_INITIALIZED;
-    }
     if (event) {
         return ORBIS_HMD_ERROR_REPROJECTION_RESOURCE_ALREADY_SET;
     }
@@ -149,9 +157,14 @@ s32 SubmitReprojection(const OrbisHmdReprojectionRenderParam* param,
 
 } // namespace
 
-void NotifyReprojection(s32 handle, bool start) {
+void ResetReprojection() {
     std::scoped_lock lock{g_reprojection_mutex};
-    if (!g_initialized || !g_buffers_set || handle != g_display_handle) {
+    ResetReprojectionState();
+}
+
+void NotifyReprojection(s32 handle, bool start, bool primary_output) {
+    std::scoped_lock lock{g_reprojection_mutex};
+    if (!g_initialized || (g_buffers_set ? handle != g_display_handle : !primary_output)) {
         return;
     }
     const auto& event = start ? g_start_event : g_end_event;
@@ -195,14 +208,7 @@ s32 PS4_SYSV_ABI sceHmdReprojectionFinalize() {
     if (!g_initialized) {
         return ORBIS_HMD_ERROR_REPROJECTION_NOT_INITIALIZED;
     }
-    if (presenter) {
-        presenter->StopVr();
-    }
-    g_initialized = false;
-    g_buffers_set = false;
-    g_display_handle = 0;
-    g_start_event.reset();
-    g_end_event.reset();
+    ResetReprojectionState();
     return ORBIS_OK;
 }
 
