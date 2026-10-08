@@ -859,12 +859,37 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     return frame;
 }
 
+static void ReleaseVrLabels(const VideoCore::VrFrame& frame) {
+    const std::array labels{frame.scene.release_label,
+                            frame.overlay ? frame.overlay->release_label : nullptr};
+    for (size_t i = 0; i < labels.size(); ++i) {
+        if (labels[i] && (i == 0 || labels[i] != labels[0]) &&
+            Core::Memory::Instance()->IsValidMapping(reinterpret_cast<VAddr>(labels[i]),
+                                                     sizeof(u64))) {
+            std::atomic_ref{*labels[i]}.store(0, std::memory_order_release);
+        }
+    }
+}
+
 void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
     if (vr_frame_pending.exchange(true)) {
+        if (frame.scene.release_label || (frame.overlay && frame.overlay->release_label)) {
+            liverpool->SubmitGfxCallback([this, frame] {
+                draw_scheduler.Finish();
+                ReleaseVrLabels(frame);
+            });
+        }
         return;
     }
     liverpool->SubmitGfxCallback([this, frame] {
+        bool images_consumed{};
         SCOPE_EXIT {
+            if (frame.scene.release_label || (frame.overlay && frame.overlay->release_label)) {
+                if (!images_consumed) {
+                    draw_scheduler.Finish();
+                }
+                ReleaseVrLabels(frame);
+            }
             vr_frame_pending = false;
         };
         if (!openxr->IsSessionRunning()) {
@@ -1007,6 +1032,7 @@ void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
                 {
                     ZoneScopedN("OpenXR stereo GPU completion");
                     draw_scheduler.Finish();
+                    images_consumed = true;
                 }
                 for (const auto& screenshot : screenshots) {
                     if (screenshot) {

@@ -64,6 +64,12 @@ s32 ClearUserEvent(std::optional<UserEvent>& event) {
 }
 
 s32 ReadLayer(const OrbisHmdReprojectionRenderParam* param, VideoCore::VrLayer& layer) {
+    const auto label_address = reinterpret_cast<VAddr>(param->label);
+    if (param->label && (label_address % alignof(u64) != 0 ||
+                         !Core::Memory::Instance()->IsValidMapping(label_address, sizeof(u64)))) {
+        return ORBIS_HMD_ERROR_PARAMETER_INVALID;
+    }
+    layer.release_label = param->label;
     const std::array pointers{param->left_image, param->right_image};
     const std::array transforms{param->left_uv, param->right_uv};
     for (u32 eye = 0; eye < pointers.size(); ++eye) {
