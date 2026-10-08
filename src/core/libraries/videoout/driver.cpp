@@ -6,6 +6,7 @@
 #include "common/thread.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
+#include "core/libraries/hmd/hmd.h"
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/videoout/driver.h"
 #include "core/libraries/videoout/videoout_error.h"
@@ -472,6 +473,7 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
 }
 
 void VideoOutDriver::VblankThread(VideoOutPort* port, std::stop_token token) {
+    const s32 handle = port == &main_port ? 1 : 2;
     auto period = port->GetVblankPeriod();
     Common::SetCurrentThreadName(port == &main_port ? "shadPS4:MainVblankThread"
                                                     : "shadPS4:SocialVblankThread");
@@ -485,24 +487,28 @@ void VideoOutDriver::VblankThread(VideoOutPort* port, std::stop_token token) {
         }
         timer.Start();
         if (!DebugState.IsGuestThreadsPaused()) {
-            std::scoped_lock lock{port->vo_mutex};
-            auto& vblank_status = port->vblank_status;
-            for (auto event : port->vblank_events) {
-                auto equeue = Kernel::GetEqueue(event);
-                if (equeue != nullptr) {
-                    equeue->TriggerEvent(
-                        static_cast<u64>(OrbisVideoOutInternalEventId::Vblank),
-                        Kernel::OrbisKernelEvent::Filter::VideoOut,
-                        reinterpret_cast<void*>(
-                            static_cast<u64>(OrbisVideoOutInternalEventId::Vblank) |
-                            (vblank_status.count << 16)),
-                        port);
+            Hmd::NotifyReprojection(handle, true);
+            {
+                std::scoped_lock lock{port->vo_mutex};
+                auto& vblank_status = port->vblank_status;
+                for (auto event : port->vblank_events) {
+                    auto equeue = Kernel::GetEqueue(event);
+                    if (equeue != nullptr) {
+                        equeue->TriggerEvent(
+                            static_cast<u64>(OrbisVideoOutInternalEventId::Vblank),
+                            Kernel::OrbisKernelEvent::Filter::VideoOut,
+                            reinterpret_cast<void*>(
+                                static_cast<u64>(OrbisVideoOutInternalEventId::Vblank) |
+                                (vblank_status.count << 16)),
+                            port);
+                    }
                 }
+                vblank_status.count++;
+                vblank_status.process_time = Libraries::Kernel::sceKernelGetProcessTime();
+                vblank_status.tsc = Libraries::Kernel::sceKernelReadTsc();
+                port->vblank_cv.notify_all();
             }
-            vblank_status.count++;
-            vblank_status.process_time = Libraries::Kernel::sceKernelGetProcessTime();
-            vblank_status.tsc = Libraries::Kernel::sceKernelReadTsc();
-            port->vblank_cv.notify_all();
+            Hmd::NotifyReprojection(handle, false);
         }
         {
             std::scoped_lock lock{mutex};

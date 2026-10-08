@@ -111,7 +111,6 @@ public:
                         VAddr cpu_address);
 
     void SubmitVrFrame(VideoCore::VrFrame frame);
-    void SetVrFrameCallback(std::function<void(bool)> callback);
     void StopVr();
 
     Frame* PrepareBlankFrame(bool present_thread);

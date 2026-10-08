@@ -37,7 +37,6 @@ public:
                       const std::array<Input::Vr::FieldOfView, 2>& fovs,
                       const StereoRenderer& render);
     void ClearStereo();
-    void SetFrameCallback(std::function<void(bool)> callback);
     std::chrono::nanoseconds Update();
 
 private:

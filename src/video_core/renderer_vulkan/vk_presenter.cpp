@@ -859,10 +859,6 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     return frame;
 }
 
-void Presenter::SetVrFrameCallback(std::function<void(bool)> callback) {
-    openxr->SetFrameCallback(std::move(callback));
-}
-
 void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
     if (vr_frame_pending.exchange(true)) {
         return;
