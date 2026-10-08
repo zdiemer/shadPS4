@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <span>
@@ -37,7 +38,7 @@ public:
                       const StereoRenderer& render);
     void ClearStereo();
     void SetFrameCallback(std::function<void(bool)> callback);
-    void Update();
+    std::chrono::nanoseconds Update();
 
 private:
     struct Impl;

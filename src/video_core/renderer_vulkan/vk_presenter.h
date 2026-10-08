@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <functional>
 
+#include "common/polyfill_thread.h"
 #include "common/unique_function.h"
 #include "core/libraries/videoout/buffer.h"
 #include "imgui/imgui_texture.h"
@@ -111,7 +112,6 @@ public:
 
     void SubmitVrFrame(VideoCore::VrFrame frame);
     void SetVrFrameCallback(std::function<void(bool)> callback);
-    void UpdateVr();
     void StopVr();
 
     Frame* PrepareBlankFrame(bool present_thread);
@@ -133,6 +133,7 @@ private:
 
     Frontend::WindowSDL& window;
     std::unique_ptr<OpenXRContext> openxr;
+    std::jthread vr_present_thread;
     Instance instance;
     HostPasses::FsrPass fsr_pass;
     HostPasses::FsrPass::Settings fsr_settings{};

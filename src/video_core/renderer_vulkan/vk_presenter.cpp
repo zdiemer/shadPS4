@@ -7,6 +7,7 @@
 #include "common/path_util.h"
 #include "common/scope_exit.h"
 #include "common/singleton.h"
+#include "common/thread.h"
 #include "core/debug_state.h"
 #include "core/devtools/layer.h"
 #include "core/emulator_settings.h"
@@ -496,19 +497,41 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     ycbcr_pass.Create(device, instance.GetAllocator(), num_images);
     pp_pass.Create(device, swapchain.GetSurfaceFormat().format);
 
+    bool vr_session_created = false;
     if (openxr->IsAvailable()) {
         vr_copy_pass.Create(device);
-        openxr->CreateSession(instance.GetInstance(), instance.GetPhysicalDevice(), device,
-                              instance.GetGraphicsQueueFamilyIndex());
+        vr_session_created =
+            openxr->CreateSession(instance.GetInstance(), instance.GetPhysicalDevice(), device,
+                                  instance.GetGraphicsQueueFamilyIndex());
     }
 
     ImGui::Layer::AddLayer(Common::Singleton<Core::Devtools::Layer>::Instance());
     ImGui::Friends::Register();
     ImGui::ShadNetNotify::Register();
     ImGui::InvitationPrompt::Register();
+    if (vr_session_created) {
+        vr_present_thread = std::jthread([this](std::stop_token token) {
+            Common::SetCurrentThreadName("shadPS4:VrPresentThread");
+            std::chrono::nanoseconds period = std::chrono::milliseconds{10};
+            Common::AccurateTimer timer{period};
+            while (!token.stop_requested()) {
+                timer.Start();
+                const auto frame_period = openxr->Update();
+                timer.End();
+                if (frame_period != period) {
+                    period = frame_period;
+                    timer = Common::AccurateTimer{period};
+                }
+            }
+        });
+    }
 }
 
 Presenter::~Presenter() {
+    vr_present_thread.request_stop();
+    if (vr_present_thread.joinable()) {
+        vr_present_thread.join();
+    }
     ImGui::InvitationPrompt::Unregister();
     ImGui::ShadNetNotify::Unregister();
     ImGui::Friends::Unregister();
@@ -838,10 +861,6 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
 
 void Presenter::SetVrFrameCallback(std::function<void(bool)> callback) {
     openxr->SetFrameCallback(std::move(callback));
-}
-
-void Presenter::UpdateVr() {
-    openxr->Update();
 }
 
 void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
