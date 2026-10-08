@@ -230,6 +230,7 @@ s32 PS4_SYSV_ABI sceHmdTerminate() {
         return ORBIS_HMD_ERROR_NOT_INITIALIZED;
     }
     sceHmdDistortionTerminate();
+    ResetReprojection();
     g_library_initialized = false;
     return ORBIS_OK;
 }
