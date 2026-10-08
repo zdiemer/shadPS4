@@ -113,6 +113,7 @@ public:
 private:
     State GetStateLocked() const;
     bool receive_vr_input{};
+    bool has_motion_sensors{};
     std::array<float, 4> vr_orientation_origin{0.0f, 0.0f, 0.0f, 1.0f};
     // m_state_mutex must be held by the caller.
     void PushStateLocked(u64 timestamp = 0);
