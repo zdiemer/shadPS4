@@ -14,6 +14,7 @@ namespace VideoCore {
 struct VrLayer {
     std::array<AmdGpu::Image, 2> images{};
     std::array<std::array<float, 4>, 2> uv_transform{};
+    std::optional<AmdGpu::Sampler> sampler;
     u64* release_label{};
 };
 
@@ -22,6 +23,7 @@ struct VrFrame {
     std::optional<VrLayer> overlay;
     Input::Vr::Pose head_pose{};
     u64 frame_number{};
+    bool head_locked{};
 };
 
 } // namespace VideoCore

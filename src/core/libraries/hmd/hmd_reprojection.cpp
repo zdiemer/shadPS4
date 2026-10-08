@@ -287,8 +287,51 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStart(const OrbisHmdReprojectionRenderParam* 
     return SubmitReprojection(param, pose, frame_number, nullptr, flags);
 }
 
-s32 PS4_SYSV_ABI sceHmdReprojectionStart2dVr() {
-    LOG_ERROR(Lib_Hmd, "(STUBBED) called");
+s32 PS4_SYSV_ABI sceHmdReprojectionStart2dVr(const OrbisHmdReprojectionRenderParam2dVr* param,
+                                             u64 frame_number, u32 flags) {
+    std::scoped_lock lock{g_reprojection_mutex};
+    if (!g_initialized) {
+        return ORBIS_HMD_ERROR_REPROJECTION_NOT_INITIALIZED;
+    }
+    if (!g_buffers_set) {
+        return ORBIS_HMD_ERROR_REPROJECTION_NO_DISPLAY_BUFFER;
+    }
+    if (param == nullptr) {
+        return ORBIS_HMD_ERROR_PARAMETER_NULL;
+    }
+    if (flags != 0 || !presenter ||
+        !Core::Memory::Instance()->IsValidMapping(reinterpret_cast<VAddr>(param), sizeof(*param))) {
+        return ORBIS_HMD_ERROR_PARAMETER_INVALID;
+    }
+    if (param->sampler == nullptr) {
+        return ORBIS_HMD_ERROR_PARAMETER_NULL;
+    }
+    if (!Core::Memory::Instance()->IsValidMapping(reinterpret_cast<VAddr>(param->sampler),
+                                                  sizeof(AmdGpu::Sampler))) {
+        return ORBIS_HMD_ERROR_PARAMETER_INVALID;
+    }
+    AmdGpu::Sampler sampler{};
+    std::memcpy(&sampler, param->sampler, sizeof(sampler));
+    if (!sampler.Valid() || sampler.border_color_type == AmdGpu::BorderColor::Custom) {
+        return ORBIS_HMD_ERROR_UNSUPPORTED_FEATURE;
+    }
+    OrbisHmdReprojectionRenderParam stereo_param{};
+    stereo_param.left_image = param->image;
+    stereo_param.right_image = param->image;
+    stereo_param.label = param->label;
+    std::copy_n(param->uv, 4, stereo_param.left_uv);
+    std::copy_n(param->uv, 4, stereo_param.right_uv);
+    VideoCore::VrFrame frame{};
+    frame.frame_number = frame_number;
+    frame.head_locked = true;
+    if (const s32 result = ReadLayer(&stereo_param, frame.scene); result != ORBIS_OK) {
+        return result;
+    }
+    if (!HasFiniteTransforms(frame.scene)) {
+        return ORBIS_HMD_ERROR_PARAMETER_INVALID;
+    }
+    frame.scene.sampler = sampler;
+    presenter->SubmitVrFrame(frame);
     return ORBIS_OK;
 }
 

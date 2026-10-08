@@ -34,7 +34,7 @@ void VrCopyPass::Create(vk::Device device) {
     const vk::PushConstantRange push_constants{
         .stageFlags = vk::ShaderStageFlagBits::eFragment,
         .offset = 0,
-        .size = sizeof(std::array<float, 4>),
+        .size = sizeof(Settings),
     };
 
     const auto& vs_module = CompileSPV(FS_TRI_VERT, device);
@@ -183,7 +183,8 @@ void VrCopyPass::Create(vk::Device device) {
 }
 
 void VrCopyPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView source, vk::ImageView target,
-                        vk::Extent2D size, const std::array<float, 4>& bounds, bool overlay) {
+                        vk::Extent2D size, const std::array<float, 4>& bounds, bool overlay,
+                        vk::Sampler source_sampler) {
     const vk::RenderingAttachmentInfo attachment{
         .imageView = target,
         .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
@@ -198,7 +199,7 @@ void VrCopyPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView source, vk::Imag
         .pColorAttachments = &attachment,
     };
     const vk::DescriptorImageInfo image{
-        .sampler = *sampler,
+        .sampler = source_sampler ? source_sampler : *sampler,
         .imageView = source,
         .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
     };
@@ -214,8 +215,9 @@ void VrCopyPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView source, vk::Imag
                                        .maxDepth = 1.0f});
     cmdbuf.setScissor(0, vk::Rect2D{.extent = size});
     cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eGraphics, *pipeline_layout, 0, write);
-    cmdbuf.pushConstants(*pipeline_layout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(bounds),
-                         bounds.data());
+    const Settings settings{bounds, source_sampler ? 0u : 1u};
+    cmdbuf.pushConstants(*pipeline_layout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(settings),
+                         &settings);
     cmdbuf.beginRendering(rendering);
     cmdbuf.draw(3, 1, 0, 0);
     cmdbuf.endRendering();
