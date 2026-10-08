@@ -710,6 +710,8 @@ set(VR_LIBS  src/core/libraries/hmd/hmd.cpp
              src/core/libraries/hmd/hmd.h
              src/core/libraries/hmd/hmd_setup_dialog.cpp
              src/core/libraries/hmd/hmd_setup_dialog.h
+             src/core/libraries/hmd/vr_service_dialog.cpp
+             src/core/libraries/hmd/vr_service_dialog.h
              src/core/libraries/vr_tracker/vr_tracker.cpp
              src/core/libraries/vr_tracker/vr_tracker.h
 )
