@@ -68,7 +68,7 @@ State GameController::GetStateLocked() const {
         return state;
     }
     const auto vr = Vr::GetDeviceState();
-    if (!vr.session_running || !vr.mounted) {
+    if (!vr.session_running || !vr.mounted || vr.controller_mode == Vr::ControllerMode::Move) {
         return state;
     }
     using Vr::ControllerButton;

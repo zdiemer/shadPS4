@@ -96,6 +96,7 @@ struct OpenXRContext::Impl {
     XrSessionState session_state{XR_SESSION_STATE_UNKNOWN};
     bool user_presence_supported{};
     bool user_present{true};
+    Input::Vr::ControllerMode controller_mode{Input::Vr::ControllerMode::Both};
     std::atomic<bool> session_running{};
     struct EyeSwapchain {
         XrSwapchain handle{XR_NULL_HANDLE};
@@ -171,6 +172,17 @@ OpenXRContext::OpenXRContext() {
     }
 
     auto context = std::make_unique<Impl>();
+    if (const char* mode = std::getenv("SHADPS4_VR_INPUT")) {
+        if (std::strcmp(mode, "pad") == 0) {
+            context->controller_mode = Input::Vr::ControllerMode::Pad;
+        } else if (std::strcmp(mode, "move") == 0) {
+            context->controller_mode = Input::Vr::ControllerMode::Move;
+        } else if (std::strcmp(mode, "both") != 0) {
+            LOG_WARNING(Render_Vulkan, "Unknown OpenXR controller mode: {}", mode);
+        }
+        LOG_INFO(Render_Vulkan, "OpenXR controller mode: {}",
+                 static_cast<u32>(context->controller_mode));
+    }
     std::vector<const char*> enabled_extensions{XR_KHR_VULKAN_ENABLE_EXTENSION_NAME};
     const bool frame_profile = std::ranges::any_of(extensions, [](const auto& extension) {
         return std::strcmp(extension.extensionName, "XR_VALVE_frame_controller_interaction") == 0;
@@ -368,7 +380,7 @@ bool OpenXRContext::CreateSession(VkInstance instance, VkPhysicalDevice physical
         }
         LOG_WARNING(Render_Vulkan, "OpenXR stereo swapchain creation failed");
     }
-    Input::Vr::SetDeviceState({.connected = true});
+    Input::Vr::SetDeviceState({.controller_mode = impl->controller_mode, .connected = true});
     if (impl->convert_time) {
         Input::Vr::SetTrackingProvider(
             [context = impl.get()](auto time) { return context->Locate(time); });
@@ -551,6 +563,7 @@ std::optional<Input::Vr::DeviceState> OpenXRContext::Impl::Locate(
     }
     xr_time += offset;
     return Locate(xr_time, {
+                               .controller_mode = snapshot.controller_mode,
                                .connected = snapshot.connected,
                                .session_running = snapshot.session_running,
                                .mounted = snapshot.mounted,
@@ -647,6 +660,7 @@ std::chrono::nanoseconds OpenXRContext::Update() {
             }
             LOG_INFO(Render_Vulkan, "OpenXR session state: {}", static_cast<s32>(changed.state));
             Input::Vr::SetDeviceState({
+                .controller_mode = impl->controller_mode,
                 .connected = changed.state != XR_SESSION_STATE_EXITING &&
                              changed.state != XR_SESSION_STATE_LOSS_PENDING,
                 .session_running = impl->session_running,
@@ -694,6 +708,7 @@ std::chrono::nanoseconds OpenXRContext::Update() {
         }
     }
     Input::Vr::DeviceState state{
+        .controller_mode = impl->controller_mode,
         .connected = true,
         .session_running = true,
         .mounted = impl->user_present,

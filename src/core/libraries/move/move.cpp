@@ -38,7 +38,8 @@ static std::optional<size_t> GetControllerIndexLocked(s32 handle) {
     const auto it = g_controllers.find(handle);
     if (it == g_controllers.end() || it->second.type != 0 || it->second.index < 0 ||
         it->second.index >= 2 ||
-        Input::GameControllers::GetControllerIndexFromUserID(it->second.user_id) != 0) {
+        Input::GameControllers::GetControllerIndexFromUserID(it->second.user_id) != 0 ||
+        Input::Vr::GetDeviceState().controller_mode == Input::Vr::ControllerMode::Pad) {
         return std::nullopt;
     }
     return it->second.index;
