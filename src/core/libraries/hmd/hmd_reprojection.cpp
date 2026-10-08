@@ -103,6 +103,21 @@ bool HasFiniteTransforms(const VideoCore::VrLayer& layer) {
     });
 }
 
+s32 ReadSampler(const void* pointer, AmdGpu::Sampler& sampler) {
+    if (pointer == nullptr) {
+        return ORBIS_HMD_ERROR_PARAMETER_NULL;
+    }
+    if (!Core::Memory::Instance()->IsValidMapping(reinterpret_cast<VAddr>(pointer),
+                                                  sizeof(sampler))) {
+        return ORBIS_HMD_ERROR_PARAMETER_INVALID;
+    }
+    std::memcpy(&sampler, pointer, sizeof(sampler));
+    if (!sampler.Valid() || sampler.border_color_type == AmdGpu::BorderColor::Custom) {
+        return ORBIS_HMD_ERROR_UNSUPPORTED_FEATURE;
+    }
+    return ORBIS_OK;
+}
+
 s32 SubmitReprojection(const OrbisHmdReprojectionRenderParam* param,
                        const OrbisHmdReprojectionPose* pose, u64 frame_number,
                        const OrbisHmdReprojectionRenderParam* overlay, u32 flags) {
@@ -175,8 +190,81 @@ void NotifyReprojection(s32 handle, bool start, bool primary_output) {
     }
 }
 
-s32 PS4_SYSV_ABI sceHmdReprojectionStartMultilayer() {
-    LOG_ERROR(Lib_Hmd, "(STUBBED) called");
+s32 PS4_SYSV_ABI sceHmdReprojectionStartMultilayer(const OrbisHmdReprojectionLayer* layers,
+                                                   u32 count,
+                                                   const OrbisHmdReprojectionMultilayerParam* param,
+                                                   const OrbisHmdReprojectionPose* pose,
+                                                   u64 frame_number, u32 flags) {
+    std::scoped_lock lock{g_reprojection_mutex};
+    if (!g_initialized) {
+        return ORBIS_HMD_ERROR_REPROJECTION_NOT_INITIALIZED;
+    }
+    if (!g_buffers_set) {
+        return ORBIS_HMD_ERROR_REPROJECTION_NO_DISPLAY_BUFFER;
+    }
+    if (layers == nullptr || param == nullptr || pose == nullptr) {
+        return ORBIS_HMD_ERROR_PARAMETER_NULL;
+    }
+    if (count == 0 || flags != 0 || !presenter) {
+        return ORBIS_HMD_ERROR_PARAMETER_INVALID;
+    }
+    if (count > 2) {
+        return ORBIS_HMD_ERROR_UNSUPPORTED_FEATURE;
+    }
+    auto* memory = Core::Memory::Instance();
+    if (!memory->IsValidMapping(reinterpret_cast<VAddr>(layers), sizeof(*layers) * count) ||
+        !memory->IsValidMapping(reinterpret_cast<VAddr>(param), sizeof(*param)) ||
+        !memory->IsValidMapping(reinterpret_cast<VAddr>(pose), sizeof(*pose))) {
+        return ORBIS_HMD_ERROR_PARAMETER_INVALID;
+    }
+    VideoCore::VrFrame frame{};
+    frame.frame_number = frame_number;
+    std::copy_n(pose->position, 3, frame.head_pose.position.begin());
+    std::copy_n(pose->orientation, 4, frame.head_pose.orientation.begin());
+    if (!std::ranges::all_of(frame.head_pose.position,
+                             [](float value) { return std::isfinite(value); })) {
+        return ORBIS_HMD_ERROR_PARAMETER_INVALID;
+    }
+    float norm = 0;
+    for (float value : frame.head_pose.orientation) {
+        norm += value * value;
+    }
+    if (!std::isfinite(norm) || norm < 0.000001f) {
+        return ORBIS_HMD_ERROR_PARAMETER_INVALID;
+    }
+    for (float& value : frame.head_pose.orientation) {
+        value /= std::sqrt(norm);
+    }
+    if (count == 2) {
+        frame.overlay.emplace();
+    }
+    const std::array destinations{&frame.scene, frame.overlay ? &*frame.overlay : nullptr};
+    for (u32 i = 0; i < count; ++i) {
+        const auto& source = layers[i];
+        if (source.left_depth || source.right_depth || source.projection ||
+            source.flags != (i == 0 ? 0u : 2u)) {
+            return ORBIS_HMD_ERROR_UNSUPPORTED_FEATURE;
+        }
+        AmdGpu::Sampler sampler{};
+        if (const s32 result = ReadSampler(source.sampler, sampler); result != ORBIS_OK) {
+            return result;
+        }
+        OrbisHmdReprojectionRenderParam stereo_param{};
+        stereo_param.left_image = source.left_image;
+        stereo_param.right_image = source.right_image;
+        stereo_param.label = param->label;
+        std::copy_n(source.left_uv, 4, stereo_param.left_uv);
+        std::copy_n(source.right_uv, 4, stereo_param.right_uv);
+        auto& destination = *destinations[i];
+        if (const s32 result = ReadLayer(&stereo_param, destination); result != ORBIS_OK) {
+            return result;
+        }
+        if (!HasFiniteTransforms(destination)) {
+            return ORBIS_HMD_ERROR_PARAMETER_INVALID;
+        }
+        destination.sampler = sampler;
+    }
+    presenter->SubmitVrFrame(frame);
     return ORBIS_OK;
 }
 
@@ -309,17 +397,9 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStart2dVr(const OrbisHmdReprojectionRenderPar
         !Core::Memory::Instance()->IsValidMapping(reinterpret_cast<VAddr>(param), sizeof(*param))) {
         return ORBIS_HMD_ERROR_PARAMETER_INVALID;
     }
-    if (param->sampler == nullptr) {
-        return ORBIS_HMD_ERROR_PARAMETER_NULL;
-    }
-    if (!Core::Memory::Instance()->IsValidMapping(reinterpret_cast<VAddr>(param->sampler),
-                                                  sizeof(AmdGpu::Sampler))) {
-        return ORBIS_HMD_ERROR_PARAMETER_INVALID;
-    }
     AmdGpu::Sampler sampler{};
-    std::memcpy(&sampler, param->sampler, sizeof(sampler));
-    if (!sampler.Valid() || sampler.border_color_type == AmdGpu::BorderColor::Custom) {
-        return ORBIS_HMD_ERROR_UNSUPPORTED_FEATURE;
+    if (const s32 result = ReadSampler(param->sampler, sampler); result != ORBIS_OK) {
+        return result;
     }
     OrbisHmdReprojectionRenderParam stereo_param{};
     stereo_param.left_image = param->image;
