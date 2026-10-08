@@ -11,7 +11,13 @@ namespace Core::Loader {
 class SymbolsResolver;
 }
 
+namespace Input {
+class GameController;
+}
+
 namespace Libraries::Pad {
+
+Input::GameController* GetController(s32 handle);
 
 constexpr int ORBIS_PAD_MAX_TOUCH_NUM = 2;
 constexpr int ORBIS_PAD_MAX_DATA_NUM = 64;

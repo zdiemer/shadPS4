@@ -43,6 +43,11 @@ static u64 pad_handle_counter = 1;
 static std::unordered_map<HandleKey, s32, HandleKeyHash> pad_handle_map{};
 static std::unordered_map<s32, GameController*> handle_to_controller_map{};
 
+Input::GameController* GetController(s32 handle) {
+    const auto it = handle_to_controller_map.find(handle);
+    return it != handle_to_controller_map.end() ? it->second : nullptr;
+}
+
 int PS4_SYSV_ABI scePadClose(s32 handle) {
     LOG_WARNING(Lib_Pad, "called, handle: {}", handle);
     if (handle_to_controller_map.erase(handle) == 0) {

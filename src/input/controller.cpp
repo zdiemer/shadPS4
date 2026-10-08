@@ -153,6 +153,15 @@ State GameController::ReadState() {
     return GetStateLocked();
 }
 
+std::optional<State> GameController::ReadMotionState() {
+    std::lock_guard lock{m_state_mutex};
+    if (!has_motion_sensors || !m_state.connected ||
+        !SDL_GamepadSensorEnabled(m_sdl_gamepad, SDL_SENSOR_GYRO)) {
+        return std::nullopt;
+    }
+    return m_state;
+}
+
 int GameController::ReadStates(State* states, int states_num) {
     std::lock_guard lock{m_state_mutex};
     if (states_num <= 0) {

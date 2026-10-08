@@ -91,6 +91,7 @@ public:
     void DisconnectController();
 
     State ReadState();
+    std::optional<State> ReadMotionState();
     int ReadStates(State* states, int states_num);
 
     void Button(Libraries::Pad::OrbisPadButtonDataOffset button, bool isPressed);
