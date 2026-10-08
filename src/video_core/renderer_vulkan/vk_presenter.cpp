@@ -1012,8 +1012,8 @@ void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
                              submitted_count, frame.frame_number);
                 } else {
                     LOG_INFO(Render_Vulkan,
-                             "Submitted OpenXR stereo frame {} (guest {}): {:.2f} new stereo "
-                             "frames/s over {:.2f}s",
+                             "Submitted OpenXR stereo frame {} (guest {}): {:.2f} stereo "
+                             "submissions/s over {:.2f}s",
                              submitted_count, frame.frame_number,
                              (submitted_count - reported_count) / seconds, seconds);
                 }
