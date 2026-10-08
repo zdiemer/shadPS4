@@ -13,6 +13,7 @@
 #include <string_view>
 #include <vector>
 
+#include "common/debug.h"
 #include "common/logging/log.h"
 #include "input/vr_state.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
@@ -438,6 +439,7 @@ bool OpenXRContext::Impl::CreateSwapchains() {
 bool OpenXRContext::RenderStereo(const std::array<Input::Vr::Pose, 2>& poses,
                                  const std::array<Input::Vr::FieldOfView, 2>& fovs,
                                  const StereoRenderer& render) {
+    RENDERER_TRACE;
     if (!impl) {
         return false;
     }
@@ -476,7 +478,10 @@ bool OpenXRContext::RenderStereo(const std::array<Input::Vr::Pose, 2>& poses,
         }
         XrSwapchainImageWaitInfo wait_info{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
         wait_info.timeout = XR_INFINITE_DURATION;
-        result = xrWaitSwapchainImage(swapchain.handle, &wait_info);
+        {
+            ZoneScopedN("OpenXR swapchain wait");
+            result = xrWaitSwapchainImage(swapchain.handle, &wait_info);
+        }
         if (XR_FAILED(result)) {
             impl->stereo_ready = false;
             release();
@@ -515,8 +520,8 @@ void OpenXRContext::ClearStereo() {
     }
 }
 
-std::optional<Input::Vr::DeviceState>
-OpenXRContext::Impl::Locate(std::chrono::steady_clock::time_point time) {
+std::optional<Input::Vr::DeviceState> OpenXRContext::Impl::Locate(
+    std::chrono::steady_clock::time_point time) {
     const auto snapshot = Input::Vr::GetDeviceState();
     if (!snapshot.connected || !snapshot.session_running || !convert_time) {
         return std::nullopt;
@@ -618,6 +623,7 @@ void OpenXRContext::SetFrameCallback(std::function<void(bool)> callback) {
 }
 
 void OpenXRContext::Update() {
+    RENDERER_TRACE;
     if (!impl || impl->session == XR_NULL_HANDLE || impl->local_space == XR_NULL_HANDLE ||
         impl->view_space == XR_NULL_HANDLE) {
         return;
@@ -679,7 +685,12 @@ void OpenXRContext::Update() {
 
     XrFrameWaitInfo wait_info{XR_TYPE_FRAME_WAIT_INFO};
     XrFrameState frame_state{XR_TYPE_FRAME_STATE};
-    if (XR_FAILED(xrWaitFrame(impl->session, &wait_info, &frame_state))) {
+    XrResult wait_result;
+    {
+        ZoneScopedN("OpenXR frame wait");
+        wait_result = xrWaitFrame(impl->session, &wait_info, &frame_state);
+    }
+    if (XR_FAILED(wait_result)) {
         return;
     }
     std::function<void(bool)> frame_callback;
@@ -716,6 +727,7 @@ void OpenXRContext::Update() {
     end_info.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
     XrResult result;
     {
+        ZoneScopedN("OpenXR frame end");
         std::scoped_lock stereo_lock{impl->stereo_mutex};
         XrCompositionLayerProjection projection{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
         projection.space = impl->local_space;
