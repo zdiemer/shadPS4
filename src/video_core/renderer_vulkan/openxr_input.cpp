@@ -16,6 +16,9 @@ namespace Vulkan {
 OpenXRInput::OpenXRInput(XrInstance instance_) : instance{instance_} {}
 
 OpenXRInput::~OpenXRInput() {
+    if (session != XR_NULL_HANDLE && vibration != XR_NULL_HANDLE) {
+        UpdateVibration({});
+    }
     for (const auto space : grip_spaces) {
         if (space != XR_NULL_HANDLE) {
             xrDestroySpace(space);
@@ -72,7 +75,8 @@ bool OpenXRInput::Initialize(bool frame_profile) {
     stick = CreateAction("stick", XR_ACTION_TYPE_VECTOR2F_INPUT);
     grip_pose = CreateAction("grip_pose", XR_ACTION_TYPE_POSE_INPUT);
     aim_pose = CreateAction("aim_pose", XR_ACTION_TYPE_POSE_INPUT);
-    if (!trigger || !squeeze || !stick || !grip_pose || !aim_pose) {
+    vibration = CreateAction("vibration", XR_ACTION_TYPE_VIBRATION_OUTPUT);
+    if (!trigger || !squeeze || !stick || !grip_pose || !aim_pose || !vibration) {
         return false;
     }
 
@@ -89,6 +93,7 @@ bool OpenXRInput::Initialize(bool frame_profile) {
         for (size_t hand = 0; hand < hands.size(); ++hand) {
             bind(grip_pose, hand, "/input/grip/pose");
             bind(aim_pose, hand, "/input/aim/pose");
+            bind(vibration, hand, "/output/haptic");
             if (!touch && !index && !vive && !frame) {
                 bind(buttons[12], hand, "/input/select/click");
                 bind(buttons[4], hand, "/input/menu/click");
@@ -173,6 +178,7 @@ void OpenXRInput::Sync(bool focused, Input::Vr::DeviceState& state) {
     const auto previous = state.controllers;
     state.controllers = {};
     if (!focused) {
+        UpdateVibration(state);
         return;
     }
     const XrActiveActionSet active{action_set, XR_NULL_PATH};
@@ -180,6 +186,7 @@ void OpenXRInput::Sync(bool focused, Input::Vr::DeviceState& state) {
     sync.countActiveActionSets = 1;
     sync.activeActionSets = &active;
     if (xrSyncActions(session, &sync) != XR_SUCCESS) {
+        UpdateVibration(state);
         return;
     }
     for (size_t hand = 0; hand < hands.size(); ++hand) {
@@ -220,6 +227,39 @@ void OpenXRInput::Sync(bool focused, Input::Vr::DeviceState& state) {
             controller.buttons != previous[hand].buttons) {
             LOG_DEBUG(Input, "OpenXR hand {} active = {}, buttons = {:#x}", hand, controller.active,
                       controller.buttons);
+        }
+    }
+    UpdateVibration(state);
+}
+
+void OpenXRInput::UpdateVibration(const Input::Vr::DeviceState& state) {
+    const auto requested = Input::Vr::GetControllerVibration();
+    const auto now = std::chrono::steady_clock::now();
+    for (size_t hand = 0; hand < hands.size(); ++hand) {
+        const auto intensity =
+            state.mounted && state.controllers[hand].active ? requested[hand] : 0;
+        XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO};
+        info.action = vibration;
+        info.subactionPath = hands[hand];
+        if (intensity == 0) {
+            if (applied_vibration[hand] != 0) {
+                xrStopHapticFeedback(session, &info);
+                applied_vibration[hand] = 0;
+            }
+            continue;
+        }
+        if (intensity == applied_vibration[hand] && now < vibration_refresh[hand]) {
+            continue;
+        }
+        XrHapticVibration feedback{XR_TYPE_HAPTIC_VIBRATION};
+        feedback.duration = std::chrono::nanoseconds{std::chrono::milliseconds{100}}.count();
+        feedback.frequency = XR_FREQUENCY_UNSPECIFIED;
+        feedback.amplitude = intensity / 255.0f;
+        const auto result = xrApplyHapticFeedback(
+            session, &info, reinterpret_cast<const XrHapticBaseHeader*>(&feedback));
+        if (XR_SUCCEEDED(result)) {
+            applied_vibration[hand] = intensity;
+            vibration_refresh[hand] = now + std::chrono::milliseconds{50};
         }
     }
 }

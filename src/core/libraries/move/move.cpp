@@ -245,7 +245,13 @@ s32 PS4_SYSV_ABI sceMoveSetVibration(s32 handle, u8 intensity) {
     if (!g_library_initialized) {
         return ORBIS_MOVE_ERROR_NOT_INIT;
     }
-    return ORBIS_MOVE_ERROR_NO_CONTROLLER_CONNECTED;
+    if (!g_controllers.contains(handle)) {
+        return ORBIS_MOVE_ERROR_INVALID_HANDLE;
+    }
+    const auto index = GetConnectedControllerIndexLocked(handle);
+    return index && Input::Vr::SetControllerVibration(*index, intensity)
+               ? ORBIS_OK
+               : ORBIS_MOVE_ERROR_NO_CONTROLLER_CONNECTED;
 }
 
 s32 PS4_SYSV_ABI sceMoveSetLightSphere(s32 handle, u8 red, u8 green, u8 blue) {
@@ -277,7 +283,17 @@ s32 PS4_SYSV_ABI sceMoveClose(s32 handle) {
     if (!g_library_initialized) {
         return ORBIS_MOVE_ERROR_NOT_INIT;
     }
-    return g_controllers.erase(handle) ? ORBIS_OK : ORBIS_MOVE_ERROR_INVALID_HANDLE;
+    if (!g_controllers.contains(handle)) {
+        return ORBIS_MOVE_ERROR_INVALID_HANDLE;
+    }
+    const auto index = GetControllerIndexLocked(handle);
+    g_controllers.erase(handle);
+    if (index && std::ranges::none_of(g_controllers, [&](const auto& controller) {
+            return GetControllerIndexLocked(controller.first) == index;
+        })) {
+        Input::Vr::SetControllerVibration(*index, 0);
+    }
+    return ORBIS_OK;
 }
 
 s32 PS4_SYSV_ABI sceMoveTerm() {
@@ -287,6 +303,9 @@ s32 PS4_SYSV_ABI sceMoveTerm() {
         return ORBIS_MOVE_ERROR_NOT_INIT;
     }
     g_library_initialized = false;
+    for (size_t hand = 0; hand < 2; ++hand) {
+        Input::Vr::SetControllerVibration(hand, 0);
+    }
     g_controllers.clear();
     return ORBIS_OK;
 }
