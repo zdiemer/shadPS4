@@ -137,7 +137,6 @@ s32 PS4_SYSV_ABI sceMoveInit() {
 s32 PS4_SYSV_ABI sceMoveOpen(Libraries::UserService::OrbisUserServiceUserId user_id, s32 type,
                              s32 index) {
     std::scoped_lock lock{g_mutex};
-    LOG_DEBUG(Lib_Move, "called");
     if (!g_library_initialized) {
         return ORBIS_MOVE_ERROR_NOT_INIT;
     }
@@ -149,6 +148,8 @@ s32 PS4_SYSV_ABI sceMoveOpen(Libraries::UserService::OrbisUserServiceUserId user
     }
     handle += 0x100;
     g_controllers.emplace(handle, MoveController{user_id, type, index});
+    LOG_DEBUG(Lib_Move, "called user_id = {}, type = {}, index = {}, out handle = {}", user_id,
+              type, index, handle);
     return handle;
 }
 
