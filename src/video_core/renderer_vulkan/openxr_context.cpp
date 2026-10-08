@@ -106,8 +106,6 @@ struct OpenXRContext::Impl {
     std::array<XrCompositionLayerProjectionView, 2> projection_views{};
     std::mutex stereo_mutex;
     bool stereo_ready{};
-    std::mutex frame_callback_mutex;
-    std::function<void(bool)> frame_callback;
     std::unique_ptr<OpenXRInput> input;
 
     bool CreateSwapchains();
@@ -615,13 +613,6 @@ Input::Vr::DeviceState OpenXRContext::Impl::Locate(XrTime time, Input::Vr::Devic
     return state;
 }
 
-void OpenXRContext::SetFrameCallback(std::function<void(bool)> callback) {
-    if (impl) {
-        std::scoped_lock lock{impl->frame_callback_mutex};
-        impl->frame_callback = std::move(callback);
-    }
-}
-
 std::chrono::nanoseconds OpenXRContext::Update() {
     RENDERER_TRACE;
     if (!impl || impl->session == XR_NULL_HANDLE || impl->local_space == XR_NULL_HANDLE ||
@@ -693,20 +684,12 @@ std::chrono::nanoseconds OpenXRContext::Update() {
     if (XR_FAILED(wait_result)) {
         return std::chrono::milliseconds{10};
     }
-    std::function<void(bool)> frame_callback;
-    {
-        std::scoped_lock lock{impl->frame_callback_mutex};
-        frame_callback = impl->frame_callback;
-    }
     XrFrameBeginInfo begin_info{XR_TYPE_FRAME_BEGIN_INFO};
     {
         std::scoped_lock queue_lock{Scheduler::submit_mutex};
         if (XR_FAILED(xrBeginFrame(impl->session, &begin_info))) {
             return std::chrono::milliseconds{10};
         }
-    }
-    if (frame_callback) {
-        frame_callback(true);
     }
     Input::Vr::DeviceState state{
         .connected = true,
@@ -743,8 +726,6 @@ std::chrono::nanoseconds OpenXRContext::Update() {
     }
     if (XR_FAILED(result)) {
         LOG_WARNING(Render_Vulkan, "OpenXR end frame failed: {}", static_cast<s32>(result));
-    } else if (frame_callback) {
-        frame_callback(false);
     }
     return frame_state.predictedDisplayPeriod > 0
                ? std::chrono::nanoseconds{frame_state.predictedDisplayPeriod}
@@ -789,8 +770,6 @@ bool OpenXRContext::RenderStereo(const std::array<Input::Vr::Pose, 2>&,
 }
 
 void OpenXRContext::ClearStereo() {}
-
-void OpenXRContext::SetFrameCallback(std::function<void(bool)>) {}
 
 std::chrono::nanoseconds OpenXRContext::Update() {
     return std::chrono::milliseconds{10};
