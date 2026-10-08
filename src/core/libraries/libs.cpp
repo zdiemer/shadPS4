@@ -21,6 +21,7 @@
 #include "core/libraries/gnmdriver/gnmdriver.h"
 #include "core/libraries/hmd/hmd.h"
 #include "core/libraries/hmd/hmd_setup_dialog.h"
+#include "core/libraries/hmd/vr_service_dialog.h"
 #include "core/libraries/ime/error_dialog.h"
 #include "core/libraries/ime/ime.h"
 #include "core/libraries/ime/ime_dialog.h"
@@ -175,6 +176,7 @@ void InitHLELibs(Core::Loader::SymbolsResolver* sym) {
             {"libSceZlib.sprx", Libraries::Zlib::RegisterLib},
             {"libSceHmd.sprx", Libraries::Hmd::RegisterLib},
             {"libSceHmdSetupDialog.sprx", Libraries::HmdSetupDialog::RegisterLib},
+            {"libSceVrServiceDialog.sprx", Libraries::VrServiceDialog::RegisterLib},
             {"libSceDiscMap.sprx", Libraries::DiscMap::RegisterLib},
             {"ulobjmgr.sprx", Libraries::Ulobjmgr::RegisterLib},
             {"libSceSigninDialog.sprx", Libraries::SigninDialog::RegisterLib},
