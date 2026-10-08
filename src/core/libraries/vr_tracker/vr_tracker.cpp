@@ -8,6 +8,7 @@
 #include <optional>
 
 #include "common/logging/log.h"
+#include "common/singleton.h"
 #include "core/libraries/camera/vr_camera.h"
 #include "core/libraries/error_codes.h"
 #include "core/libraries/kernel/time.h"
@@ -64,6 +65,11 @@ static std::optional<Input::State> GetPadMotionState() {
     return controller ? controller->ReadMotionState() : std::nullopt;
 }
 
+static bool HasPadVrInput() {
+    const auto& controllers = *Common::Singleton<Input::GameControllers>::Instance();
+    return Pad::GetController(g_pad_handle) == controllers[0];
+}
+
 static void AdvanceCalibration() {
     const auto state = Input::Vr::GetDeviceState();
     const auto controller_ready = [&](size_t index, const Calibration& calibration) {
@@ -87,7 +93,7 @@ static void AdvanceCalibration() {
                       state.orientation_valid);
             break;
         case ORBIS_VR_TRACKER_DEVICE_DUALSHOCK4:
-            ready &= !GetPadMotionState() &&
+            ready &= HasPadVrInput() && !GetPadMotionState() &&
                      g_camera_permit == ORBIS_VR_TRACKER_DEVICE_PERMIT_ALL &&
                      controller_ready(state.controllers[1].active ? 1 : 0, calibration);
             break;
@@ -512,9 +518,8 @@ s32 PS4_SYSV_ABI sceVrTrackerGetResult(const OrbisVrTrackerGetResultParam* param
         const auto index =
             move_registered
                 ? Move::GetControllerIndex(param->handle)
-                : (Input::GameControllers::GetControllerIndexFromControllerID(param->handle) == 0
-                       ? std::optional<size_t>{state->controllers[1].active ? 1 : 0}
-                       : std::nullopt);
+                : (HasPadVrInput() ? std::optional<size_t>{state->controllers[1].active ? 1 : 0}
+                                   : std::nullopt);
         if (!index) {
             return ORBIS_OK;
         }
@@ -821,9 +826,8 @@ s32 PS4_SYSV_ABI sceVrTrackerResetOrientationRelative(const OrbisVrTrackerDevice
         const auto index =
             device_type == ORBIS_VR_TRACKER_DEVICE_MOVE
                 ? Move::GetControllerIndex(handle)
-                : (Input::GameControllers::GetControllerIndexFromControllerID(handle) == 0
-                       ? std::optional<size_t>{state->controllers[1].active ? 1 : 0}
-                       : std::nullopt);
+                : (HasPadVrInput() ? std::optional<size_t>{state->controllers[1].active ? 1 : 0}
+                                   : std::nullopt);
         if (!index) {
             return ORBIS_VR_TRACKER_ERROR_DEVICE_NOT_ORIENTED;
         }
