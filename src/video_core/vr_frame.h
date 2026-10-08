@@ -14,6 +14,7 @@ namespace VideoCore {
 struct VrLayer {
     std::array<AmdGpu::Image, 2> images{};
     std::array<std::array<float, 4>, 2> uv_transform{};
+    u64* release_label{};
 };
 
 struct VrFrame {

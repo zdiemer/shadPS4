@@ -86,7 +86,7 @@ struct OrbisHmdReprojectionRenderParam {
     void* reserved;
     float left_uv[4];
     float right_uv[4];
-    const u64* label;
+    u64* label;
     u64 timeout;
     u64 reserved1[2];
     u32 flags;
