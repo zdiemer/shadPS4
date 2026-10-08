@@ -46,11 +46,25 @@ VideoOutDriver::VideoOutDriver(u32 width, u32 height) {
         port->resolution.full_height = height;
         port->resolution.pane_width = width;
         port->resolution.pane_height = height;
+        port->vblank_period = 1000000000 / EmulatorSettings.GetVblankFrequency();
     }
     present_thread = std::jthread([&](std::stop_token token) { PresentThread(token); });
+    vblank_threads[0] =
+        std::jthread([&](std::stop_token token) { VblankThread(&main_port, token); });
+    vblank_threads[1] =
+        std::jthread([&](std::stop_token token) { VblankThread(&social_port, token); });
 }
 
-VideoOutDriver::~VideoOutDriver() = default;
+VideoOutDriver::~VideoOutDriver() {
+    present_thread.request_stop();
+    for (auto& thread : vblank_threads) {
+        thread.request_stop();
+    }
+    present_thread.join();
+    for (auto& thread : vblank_threads) {
+        thread.join();
+    }
+}
 
 int VideoOutDriver::Open(s32 bus_type, const ServiceThreadParams* params) {
     const s32 handle = bus_type == SCE_VIDEO_OUT_BUS_TYPE_MAIN ? 1 : 2;
@@ -67,16 +81,20 @@ int VideoOutDriver::Open(s32 bus_type, const ServiceThreadParams* params) {
 void VideoOutDriver::Close(s32 handle) {
     auto* port = GetPort(handle);
     std::scoped_lock lock{mutex};
+    std::scoped_lock port_lock{port->vo_mutex};
 
     // Mark as closed
     port->is_open = false;
     port->flip_rate = 0;
     port->prev_index = -1;
+    last_flip_vblank[handle - 1] = ~u64{};
 
     // Clear port information
     std::memset(port->buffer_labels.data(), 0, sizeof(port->buffer_labels));
     std::memset(port->groups.data(), 0, sizeof(port->groups));
-    std::memset(&port->vblank_status, 0, sizeof(port->vblank_status));
+    port->vblank_status = {};
+    port->vblank_period = 1000000000 / EmulatorSettings.GetVblankFrequency();
+    port->resolution.refresh_rate = SCE_VIDEO_OUT_REFRESH_RATE_59_94HZ;
     port->flip_status = FlipStatus{};
 
     // Re-initialize buffers
@@ -366,14 +384,39 @@ void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_
     });
 }
 
+int VideoOutDriver::SetRefreshRate(VideoOutPort* port, u64 refresh_rate) {
+    s64 period;
+    switch (refresh_rate) {
+    case static_cast<u64>(SCE_VIDEO_OUT_REFRESH_RATE_ANY):
+        return ORBIS_OK;
+    case SCE_VIDEO_OUT_REFRESH_RATE_23_98HZ:
+        period = 1001000000000 / 24000;
+        break;
+    case SCE_VIDEO_OUT_REFRESH_RATE_50HZ:
+        period = 1000000000 / 50;
+        break;
+    case SCE_VIDEO_OUT_REFRESH_RATE_59_94HZ:
+        period = 1001000000000 / 60000;
+        break;
+    case SCE_VIDEO_OUT_REFRESH_RATE_119_88HZ:
+        period = 1001000000000 / 120000;
+        break;
+    case SCE_VIDEO_OUT_REFRESH_RATE_89_91HZ:
+        period = 1001000000000 / 90000;
+        break;
+    default:
+        return ORBIS_VIDEO_OUT_ERROR_UNSUPPORTED_OUTPUT_MODE;
+    }
+    std::scoped_lock lock{port->vo_mutex};
+    port->resolution.refresh_rate = refresh_rate;
+    port->vblank_period = period;
+    LOG_INFO(Lib_VideoOut, "Output refresh rate = {}, vblank period = {} ns", refresh_rate, period);
+    return ORBIS_OK;
+}
+
 void VideoOutDriver::PresentThread(std::stop_token token) {
-    const std::chrono::nanoseconds vblank_period(1000000000 /
-                                                 EmulatorSettings.GetVblankFrequency());
-
     Common::SetCurrentThreadName("shadPS4:PresentThread");
-    Common::SetCurrentThreadRealtime(vblank_period);
-
-    Common::AccurateTimer timer{vblank_period};
+    u64 last_tick{};
 
     const auto receive_request = [this] -> Request {
         std::scoped_lock lk{mutex};
@@ -384,9 +427,12 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
                 continue;
             }
             const auto request = queue.front();
-            const auto* port = request.port;
-            if (port->vblank_status.count % (port->flip_rate + 1) == 0) {
+            auto* port = request.port;
+            std::scoped_lock port_lock{port->vo_mutex};
+            const auto count = port->vblank_status.count / (port->flip_rate + 1);
+            if (count != last_flip_vblank[index]) {
                 queue.pop();
+                last_flip_vblank[index] = count;
                 next_request_port = (index + 1) % requests.size();
                 return request;
             }
@@ -395,29 +441,50 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
     };
 
     while (!token.stop_requested()) {
-        timer.Start();
+        {
+            std::unique_lock lock{mutex};
+            Common::CondvarWait(present_cv, lock, token, [&] { return present_tick != last_tick; });
+            last_tick = present_tick;
+        }
+        if (token.stop_requested()) {
+            break;
+        }
 
         if (DebugState.IsGuestThreadsPaused()) {
             DrawLastFrame();
-            timer.End();
             continue;
         }
 
-        const auto request = receive_request();
-        if (!request) {
-            if (timer.GetTotalWait().count() < 0) {
-                if (!main_port.is_open && !social_port.is_open) {
-                    DrawBlankFrame();
-                } else if (ImGui::Core::MustKeepDrawing()) {
-                    DrawLastFrame();
-                }
-            }
-        } else {
+        bool flipped = false;
+        while (const auto request = receive_request()) {
             Flip(request);
             FRAME_END;
+            flipped = true;
         }
+        if (!flipped) {
+            if (!main_port.is_open && !social_port.is_open) {
+                DrawBlankFrame();
+            } else if (ImGui::Core::MustKeepDrawing()) {
+                DrawLastFrame();
+            }
+        }
+    }
+}
 
-        for (auto* port : {&main_port, &social_port}) {
+void VideoOutDriver::VblankThread(VideoOutPort* port, std::stop_token token) {
+    auto period = port->GetVblankPeriod();
+    Common::SetCurrentThreadName(port == &main_port ? "shadPS4:MainVblankThread"
+                                                    : "shadPS4:SocialVblankThread");
+    Common::SetCurrentThreadRealtime(period);
+    Common::AccurateTimer timer{period};
+    while (!token.stop_requested()) {
+        const auto requested_period = port->GetVblankPeriod();
+        if (period != requested_period) {
+            period = requested_period;
+            timer = Common::AccurateTimer{period};
+        }
+        timer.Start();
+        if (!DebugState.IsGuestThreadsPaused()) {
             std::scoped_lock lock{port->vo_mutex};
             auto& vblank_status = port->vblank_status;
             for (auto event : port->vblank_events) {
@@ -437,7 +504,11 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
             vblank_status.tsc = Libraries::Kernel::sceKernelReadTsc();
             port->vblank_cv.notify_all();
         }
-
+        {
+            std::scoped_lock lock{mutex};
+            ++present_tick;
+        }
+        present_cv.notify_one();
         timer.End();
     }
 }

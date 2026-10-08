@@ -105,6 +105,7 @@ s32 PS4_SYSV_ABI sceVideoOutAddVblankEvent(Kernel::OrbisKernelEqueue eq, s32 han
     event.data = port;
     equeue->AddEvent(event);
 
+    std::scoped_lock lock{port->vo_mutex};
     port->vblank_events.push_back(eq);
     return ORBIS_OK;
 }
@@ -121,6 +122,7 @@ s32 PS4_SYSV_ABI sceVideoOutDeleteVblankEvent(Kernel::OrbisKernelEqueue eq, s32 
     }
     equeue->RemoveEvent(static_cast<u64>(OrbisVideoOutInternalEventId::Vblank),
                         Kernel::OrbisKernelEvent::Filter::VideoOut, port);
+    std::scoped_lock lock{port->vo_mutex};
     std::erase(port->vblank_events, eq);
     return ORBIS_OK;
 }
@@ -143,7 +145,12 @@ s32 PS4_SYSV_ABI sceVideoOutRegisterBuffers(s32 handle, s32 startIndex, void* co
 
 s32 PS4_SYSV_ABI sceVideoOutSetFlipRate(s32 handle, s32 rate) {
     LOG_TRACE(Lib_VideoOut, "called");
-    driver->GetPort(handle)->flip_rate = rate;
+    auto* port = driver->GetPort(handle);
+    if (!port) {
+        return ORBIS_VIDEO_OUT_ERROR_INVALID_HANDLE;
+    }
+    std::scoped_lock lock{port->vo_mutex};
+    port->flip_rate = rate;
     return ORBIS_OK;
 }
 
@@ -294,6 +301,7 @@ s32 PS4_SYSV_ABI sceVideoOutGetResolutionStatus(s32 handle, SceVideoOutResolutio
         return ORBIS_VIDEO_OUT_ERROR_INVALID_HANDLE;
     }
 
+    std::scoped_lock lock{port->vo_mutex};
     *status = port->resolution;
     return ORBIS_OK;
 }
@@ -453,6 +461,17 @@ s32 PS4_SYSV_ABI sceVideoOutConfigureOutputMode_(s32 handle, u32 reserved, const
 
     if (reserved != 0) {
         return ORBIS_VIDEO_OUT_ERROR_INVALID_VALUE;
+    }
+
+    if (mode == nullptr) {
+        return ORBIS_VIDEO_OUT_ERROR_INVALID_ADDRESS;
+    }
+    if (mode->colorimetry != OrbisVideoOutColorimetry::Any &&
+        mode->colorimetry != OrbisVideoOutColorimetry::Bt2020PQ) {
+        return ORBIS_VIDEO_OUT_ERROR_INVALID_VALUE;
+    }
+    if (const auto result = driver->SetRefreshRate(port, mode->refresh_rate); result != ORBIS_OK) {
+        return result;
     }
 
     switch (mode->colorimetry) {
