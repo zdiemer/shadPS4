@@ -15,6 +15,7 @@
 #include "core/libraries/kernel/posix_error.h"
 #include "core/libraries/kernel/time.h"
 #include "core/libraries/libs.h"
+#include "core/platform.h"
 
 namespace Libraries::Kernel {
 
@@ -23,6 +24,21 @@ extern void KernelSignalRequest();
 
 static std::unordered_map<s32, EqueueInternal*> kqueues;
 static constexpr auto HrTimerSpinlockThresholdNs = 1200000u;
+
+EqueueInternal::~EqueueInternal() {
+    std::vector<Platform::InterruptId> interrupts;
+    {
+        std::scoped_lock lock{m_mutex};
+        for (const auto& event : m_events) {
+            if (event.event.filter == OrbisKernelEvent::Filter::GraphicsCore) {
+                interrupts.push_back(static_cast<Platform::InterruptId>(event.event.ident));
+            }
+        }
+    }
+    for (const auto interrupt : interrupts) {
+        Platform::IrqC::Instance()->Unregister(interrupt, this);
+    }
+}
 
 EqueueInternal* GetEqueue(OrbisKernelEqueue eq) {
     if (!kqueues.contains(eq)) {
