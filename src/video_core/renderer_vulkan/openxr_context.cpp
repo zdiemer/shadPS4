@@ -104,6 +104,7 @@ struct OpenXRContext::Impl {
     };
     std::array<EyeSwapchain, 2> swapchains{};
     std::array<XrCompositionLayerProjectionView, 2> projection_views{};
+    bool head_locked{};
     std::mutex stereo_mutex;
     bool stereo_ready{};
     std::unique_ptr<OpenXRInput> input;
@@ -436,7 +437,7 @@ bool OpenXRContext::Impl::CreateSwapchains() {
 
 bool OpenXRContext::RenderStereo(const std::array<Input::Vr::Pose, 2>& poses,
                                  const std::array<Input::Vr::FieldOfView, 2>& fovs,
-                                 const StereoRenderer& render) {
+                                 const StereoRenderer& render, bool head_locked) {
     RENDERER_TRACE;
     if (!impl) {
         return false;
@@ -507,6 +508,7 @@ bool OpenXRContext::RenderStereo(const std::array<Input::Vr::Pose, 2>& poses,
         view.subImage.imageRect.extent = {static_cast<int32_t>(sizes[eye].width),
                                           static_cast<int32_t>(sizes[eye].height)};
     }
+    impl->head_locked = head_locked;
     impl->stereo_ready = true;
     return true;
 }
@@ -713,7 +715,7 @@ std::chrono::nanoseconds OpenXRContext::Update() {
         ZoneScopedN("OpenXR frame end");
         std::scoped_lock stereo_lock{impl->stereo_mutex};
         XrCompositionLayerProjection projection{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
-        projection.space = impl->local_space;
+        projection.space = impl->head_locked ? impl->view_space : impl->local_space;
         projection.viewCount = impl->projection_views.size();
         projection.views = impl->projection_views.data();
         const auto* layer = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&projection);
@@ -765,7 +767,7 @@ bool OpenXRContext::CreateSession(VkInstance, VkPhysicalDevice, VkDevice, u32) {
 
 bool OpenXRContext::RenderStereo(const std::array<Input::Vr::Pose, 2>&,
                                  const std::array<Input::Vr::FieldOfView, 2>&,
-                                 const StereoRenderer&) {
+                                 const StereoRenderer&, bool) {
     return false;
 }
 

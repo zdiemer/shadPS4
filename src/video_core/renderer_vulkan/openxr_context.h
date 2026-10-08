@@ -35,7 +35,7 @@ public:
         std::function<bool(const std::array<vk::Image, 2>&, const std::array<vk::Extent2D, 2>&)>;
     bool RenderStereo(const std::array<Input::Vr::Pose, 2>& poses,
                       const std::array<Input::Vr::FieldOfView, 2>& fovs,
-                      const StereoRenderer& render);
+                      const StereoRenderer& render, bool head_locked = false);
     void ClearStereo();
     std::chrono::nanoseconds Update();
 

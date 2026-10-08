@@ -902,7 +902,7 @@ void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
             {{-outer, inner, vertical, -vertical}, {-inner, outer, vertical, -vertical}}};
         std::array<Input::Vr::Pose, 2> poses{frame.head_pose, frame.head_pose};
         const auto& q = frame.head_pose.orientation;
-        for (u32 eye = 0; eye < poses.size(); ++eye) {
+        for (u32 eye = 0; !frame.head_locked && eye < poses.size(); ++eye) {
             const float offset = eye == 0 ? -0.0315f : 0.0315f;
             poses[eye].position[0] += offset * (1 - 2 * (q[1] * q[1] + q[2] * q[2]));
             poses[eye].position[1] += offset * (2 * (q[0] * q[1] + q[3] * q[2]));
@@ -910,9 +910,13 @@ void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
         }
         const u32 layer_count = frame.overlay ? 2 : 1;
         const std::array layers{&frame.scene, frame.overlay ? &*frame.overlay : nullptr};
+        std::array<vk::Sampler, 2> samplers{};
         std::array<std::array<VideoCore::TextureCache::ImageDesc, 2>, 2> descriptions{};
         std::array<std::array<VideoCore::ImageId, 2>, 2> sources{};
         for (u32 layer = 0; layer < layer_count; ++layer) {
+            if (layers[layer]->sampler) {
+                samplers[layer] = texture_cache.GetSampler(*layers[layer]->sampler, {}, false);
+            }
             for (u32 eye = 0; eye < sources[layer].size(); ++eye) {
                 descriptions[layer][eye] = {layers[layer]->images[eye], Shader::ImageResource{}};
                 const auto& info = descriptions[layer][eye].info;
@@ -925,8 +929,9 @@ void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
                 texture_cache.UpdateImage(sources[layer][eye]);
             }
         }
-        const bool submitted =
-            openxr->RenderStereo(poses, fovs, [&](const auto& targets, const auto& sizes) {
+        const bool submitted = openxr->RenderStereo(
+            poses, fovs,
+            [&](const auto& targets, const auto& sizes) {
                 draw_scheduler.EndRendering();
                 std::array<std::array<vk::ImageView, 2>, 2> source_views{};
                 std::array<vk::UniqueImageView, 2> target_views{};
@@ -982,14 +987,15 @@ void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
                                 {.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier});
                         }
                         const auto& uv = layers[layer]->uv_transform[eye];
-                        const std::array bounds{
-                            uv[2] + std::tan(fovs[eye].left) * uv[0],
-                            uv[3] - std::tan(fovs[eye].up) * uv[1],
-                            uv[2] + std::tan(fovs[eye].right) * uv[0],
-                            uv[3] - std::tan(fovs[eye].down) * uv[1],
-                        };
+                        const std::array bounds =
+                            frame.head_locked
+                                ? std::array{uv[2], uv[3] + uv[1], uv[2] + uv[0], uv[3]}
+                                : std::array{uv[2] + std::tan(fovs[eye].left) * uv[0],
+                                             uv[3] - std::tan(fovs[eye].up) * uv[1],
+                                             uv[2] + std::tan(fovs[eye].right) * uv[0],
+                                             uv[3] - std::tan(fovs[eye].down) * uv[1]};
                         vr_copy_pass.Render(cmdbuf, source_views[layer][eye], *target_views[eye],
-                                            sizes[eye], bounds, layer > 0);
+                                            sizes[eye], bounds, layer > 0, samplers[layer]);
                     }
                     if (screenshot_count > 0) {
                         auto capture_paths =
@@ -1040,7 +1046,8 @@ void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
                     }
                 }
                 return true;
-            });
+            },
+            frame.head_locked);
         if (submitted) {
             static u64 submitted_count{};
             static u64 reported_count{};

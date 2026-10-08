@@ -94,6 +94,16 @@ struct OrbisHmdReprojectionRenderParam {
 };
 static_assert(sizeof(OrbisHmdReprojectionRenderParam) == 96);
 
+struct OrbisHmdReprojectionRenderParam2dVr {
+    const void* image;
+    const void* sampler;
+    float uv[4];
+    u64* label;
+    u64 timeout;
+    u64 reserved[4];
+};
+static_assert(sizeof(OrbisHmdReprojectionRenderParam2dVr) == 80);
+
 struct OrbisHmdReprojectionPose {
     float position[3];
     float orientation[4];
@@ -123,7 +133,8 @@ s32 PS4_SYSV_ABI sceHmdReprojectionSetUserEventStart(s64 queue, s32 id);
 s32 PS4_SYSV_ABI sceHmdReprojectionStart(const OrbisHmdReprojectionRenderParam* param,
                                          const OrbisHmdReprojectionPose* pose, u64 frame_number,
                                          u32 flags);
-s32 PS4_SYSV_ABI sceHmdReprojectionStart2dVr();
+s32 PS4_SYSV_ABI sceHmdReprojectionStart2dVr(const OrbisHmdReprojectionRenderParam2dVr* param,
+                                             u64 frame_number, u32 flags);
 s32 PS4_SYSV_ABI sceHmdReprojectionStartCapture();
 s32 PS4_SYSV_ABI sceHmdReprojectionStartLiveCapture();
 s32 PS4_SYSV_ABI sceHmdReprojectionStartMultilayer2();
