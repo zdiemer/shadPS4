@@ -67,7 +67,8 @@ static std::optional<Input::State> GetPadMotionState() {
 
 static bool HasPadVrInput() {
     const auto& controllers = *Common::Singleton<Input::GameControllers>::Instance();
-    return Pad::GetController(g_pad_handle) == controllers[0];
+    return Input::Vr::GetDeviceState().controller_mode != Input::Vr::ControllerMode::Move &&
+           Pad::GetController(g_pad_handle) == controllers[0];
 }
 
 static void AdvanceCalibration() {

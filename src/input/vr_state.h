@@ -62,7 +62,14 @@ struct ControllerState {
     bool angular_velocity_valid{};
 };
 
+enum class ControllerMode {
+    Both,
+    Pad,
+    Move,
+};
+
 struct DeviceState {
+    ControllerMode controller_mode{ControllerMode::Both};
     bool connected{};
     bool session_running{};
     bool mounted{};
