@@ -396,7 +396,6 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
 
     while (!token.stop_requested()) {
         timer.Start();
-        presenter->UpdateVr();
 
         if (DebugState.IsGuestThreadsPaused()) {
             DrawLastFrame();

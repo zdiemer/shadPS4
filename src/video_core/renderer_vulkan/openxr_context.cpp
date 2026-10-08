@@ -622,11 +622,11 @@ void OpenXRContext::SetFrameCallback(std::function<void(bool)> callback) {
     }
 }
 
-void OpenXRContext::Update() {
+std::chrono::nanoseconds OpenXRContext::Update() {
     RENDERER_TRACE;
     if (!impl || impl->session == XR_NULL_HANDLE || impl->local_space == XR_NULL_HANDLE ||
         impl->view_space == XR_NULL_HANDLE) {
-        return;
+        return std::chrono::milliseconds{10};
     }
     XrEventDataBuffer event{XR_TYPE_EVENT_DATA_BUFFER};
     while (xrPollEvent(impl->instance, &event) == XR_SUCCESS) {
@@ -680,7 +680,7 @@ void OpenXRContext::Update() {
     }
 
     if (!impl->session_running) {
-        return;
+        return std::chrono::milliseconds{10};
     }
 
     XrFrameWaitInfo wait_info{XR_TYPE_FRAME_WAIT_INFO};
@@ -691,7 +691,7 @@ void OpenXRContext::Update() {
         wait_result = xrWaitFrame(impl->session, &wait_info, &frame_state);
     }
     if (XR_FAILED(wait_result)) {
-        return;
+        return std::chrono::milliseconds{10};
     }
     std::function<void(bool)> frame_callback;
     {
@@ -702,7 +702,7 @@ void OpenXRContext::Update() {
     {
         std::scoped_lock queue_lock{Scheduler::submit_mutex};
         if (XR_FAILED(xrBeginFrame(impl->session, &begin_info))) {
-            return;
+            return std::chrono::milliseconds{10};
         }
     }
     if (frame_callback) {
@@ -746,6 +746,9 @@ void OpenXRContext::Update() {
     } else if (frame_callback) {
         frame_callback(false);
     }
+    return frame_state.predictedDisplayPeriod > 0
+               ? std::chrono::nanoseconds{frame_state.predictedDisplayPeriod}
+               : std::chrono::milliseconds{10};
 }
 
 #else
@@ -789,7 +792,9 @@ void OpenXRContext::ClearStereo() {}
 
 void OpenXRContext::SetFrameCallback(std::function<void(bool)>) {}
 
-void OpenXRContext::Update() {}
+std::chrono::nanoseconds OpenXRContext::Update() {
+    return std::chrono::milliseconds{10};
+}
 
 #endif
 
