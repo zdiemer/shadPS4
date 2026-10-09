@@ -184,7 +184,6 @@ std::filesystem::path GetInputConfigFile(const std::string& game_id) {
             {"hotkey_volume_down", "kpminus"},
             {"hotkey_emulator_settings", "f3"},
             {"hotkey_toggle_friends", "f2"},
-            {"hotkey_recenter_vr_pad", "f1"},
         };
         std::string legacy_capture_binding;
         bool legacy_capture_binding_found = false;
