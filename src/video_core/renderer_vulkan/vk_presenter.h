@@ -116,6 +116,8 @@ public:
     Frame* PrepareBlankFrame(bool present_thread);
 
     void Present(Frame* frame, bool is_reusing_frame = false, bool is_game_frame = true);
+    bool IsFrameReady(const Frame* frame) const;
+    void DiscardFrame(Frame* frame);
     Frame* PrepareLastFrame();
 
 private:

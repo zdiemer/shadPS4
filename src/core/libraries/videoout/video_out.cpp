@@ -149,6 +149,9 @@ s32 PS4_SYSV_ABI sceVideoOutSetFlipRate(s32 handle, s32 rate) {
     if (!port) {
         return ORBIS_VIDEO_OUT_ERROR_INVALID_HANDLE;
     }
+    if (rate < 0) {
+        return ORBIS_VIDEO_OUT_ERROR_INVALID_VALUE;
+    }
     std::scoped_lock lock{port->vo_mutex};
     port->flip_rate = rate;
     return ORBIS_OK;

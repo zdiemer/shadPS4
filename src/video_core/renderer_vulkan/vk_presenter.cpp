@@ -1185,6 +1185,24 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
     return frame;
 }
 
+bool Presenter::IsFrameReady(const Frame* frame) const {
+    return Check<"get frame ready semaphore">(instance.GetDevice().getSemaphoreCounterValue(
+               frame->ready_semaphore)) >= frame->ready_tick;
+}
+
+void Presenter::DiscardFrame(Frame* frame) {
+    const vk::SemaphoreWaitInfo wait_info{
+        .semaphoreCount = 1,
+        .pSemaphores = &frame->ready_semaphore,
+        .pValues = &frame->ready_tick,
+    };
+    Check<"wait for discarded frame">(
+        instance.GetDevice().waitSemaphores(wait_info, std::numeric_limits<u64>::max()));
+    std::scoped_lock lock{free_mutex};
+    free_queue.push(frame);
+    free_cv.notify_one();
+}
+
 void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame) {
     // Free the frame for reuse
     const auto free_frame = [&] {

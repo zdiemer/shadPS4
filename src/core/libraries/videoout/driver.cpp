@@ -47,7 +47,9 @@ VideoOutDriver::VideoOutDriver(u32 width, u32 height) {
         port->resolution.full_height = height;
         port->resolution.pane_width = width;
         port->resolution.pane_height = height;
-        port->vblank_period = 1000000000 / EmulatorSettings.GetVblankFrequency();
+        const auto configured_rate = EmulatorSettings.GetVblankFrequency();
+        port->vblank_period =
+            configured_rate == 60 ? 1001000000000 / 60000 : 1000000000 / configured_rate;
     }
     present_thread = std::jthread([&](std::stop_token token) { PresentThread(token); });
     vblank_threads[0] =
@@ -83,18 +85,29 @@ void VideoOutDriver::Close(s32 handle) {
     auto* port = GetPort(handle);
     std::scoped_lock lock{mutex};
     std::scoped_lock port_lock{port->vo_mutex};
+    std::scoped_lock status_lock{port->port_mutex};
 
     // Mark as closed
     port->is_open = false;
+    ++port->generation;
+    liverpool->SetVoPort(nullptr, handle - 1);
+    auto& queue = requests[handle - 1];
+    while (!queue.empty()) {
+        present_requests.push(queue.front());
+        queue.pop();
+    }
+    present_cv.notify_one();
     port->flip_rate = 0;
     port->prev_index = -1;
-    last_flip_vblank[handle - 1] = ~u64{};
+    port->is_hdr = false;
 
     // Clear port information
     std::memset(port->buffer_labels.data(), 0, sizeof(port->buffer_labels));
     std::memset(port->groups.data(), 0, sizeof(port->groups));
     port->vblank_status = {};
-    port->vblank_period = 1000000000 / EmulatorSettings.GetVblankFrequency();
+    const auto configured_rate = EmulatorSettings.GetVblankFrequency();
+    port->vblank_period =
+        configured_rate == 60 ? 1001000000000 / 60000 : 1000000000 / configured_rate;
     port->resolution.refresh_rate = SCE_VIDEO_OUT_REFRESH_RATE_59_94HZ;
     port->flip_status = FlipStatus{};
 
@@ -282,12 +295,6 @@ int VideoOutDriver::ChangeBufferAttribute(VideoOutPort* port, s32 attributeIndex
 }
 
 void VideoOutDriver::Flip(const Request& req) {
-    // Update HDR status before presenting.
-    presenter->SetHDR(req.port->is_hdr);
-
-    // Present the frame.
-    presenter->Present(req.frame);
-
     // Update flip status.
     auto* port = req.port;
     {
@@ -340,9 +347,15 @@ void VideoOutDriver::DrawLastFrame() {
 
 bool VideoOutDriver::SubmitFlip(VideoOutPort* port, s32 index, s64 flip_arg,
                                 bool is_eop /*= false*/) {
+    u64 generation;
     {
-        std::unique_lock lock{port->port_mutex};
-        if (index != -1 && port->flip_status.flip_pending_num > 16) {
+        std::scoped_lock lock{mutex};
+        if (!port->is_open) {
+            return false;
+        }
+        generation = port->generation;
+        std::unique_lock status_lock{port->port_mutex};
+        if (index != -1 && port->flip_status.flip_pending_num > MaxDisplayBuffers) {
             LOG_ERROR(Lib_VideoOut, "Flip queue is full");
             return false;
         }
@@ -356,38 +369,59 @@ bool VideoOutDriver::SubmitFlip(VideoOutPort* port, s32 index, s64 flip_arg,
 
     if (!is_eop) {
         // Non EOP flips can arrive from any thread so ask GPU thread to perform them
-        liverpool->SendCommand([=, this]() { SubmitFlipInternal(port, index, flip_arg, is_eop); });
+        liverpool->SendCommand(
+            [=, this]() { SubmitFlipInternal(port, index, flip_arg, is_eop, generation); });
     } else {
-        SubmitFlipInternal(port, index, flip_arg, is_eop);
+        SubmitFlipInternal(port, index, flip_arg, is_eop, generation);
     }
 
     return true;
 }
 
-void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_arg, bool is_eop) {
+void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_arg, bool is_eop,
+                                        u64 generation) {
     Vulkan::Frame* frame;
+    BufferAttributeGroup group{};
+    uintptr_t address{};
+    {
+        std::scoped_lock lock{mutex};
+        if (!port->is_open || port->generation != generation) {
+            return;
+        }
+        if (index != -1) {
+            const auto& buffer = port->buffer_slots[index];
+            ASSERT_MSG(buffer.group_index >= 0, "Trying to flip an unregistered buffer!");
+            group = port->groups[buffer.group_index];
+            address = buffer.address_left;
+        }
+    }
     if (index == -1) {
         frame = presenter->PrepareBlankFrame(false);
     } else {
-        const auto& buffer = port->buffer_slots[index];
-        ASSERT_MSG(buffer.group_index >= 0, "Trying to flip an unregistered buffer!");
-        const auto& group = port->groups[buffer.group_index];
-        frame = presenter->PrepareFrame(group, buffer.address_left);
+        frame = presenter->PrepareFrame(group, address);
     }
 
     std::scoped_lock lock{mutex};
-    requests[port == &main_port ? 0 : 1].push({
+    const Request request{
         .frame = frame,
         .port = port,
         .flip_arg = flip_arg,
         .index = index,
         .eop = is_eop,
-    });
+        .generation = generation,
+    };
+    if (!port->is_open || port->generation != generation) {
+        present_requests.push(request);
+        present_cv.notify_one();
+    } else {
+        requests[port == &main_port ? 0 : 1].push(request);
+    }
 }
 
 int VideoOutDriver::SetRefreshRate(VideoOutPort* port, u64 refresh_rate) {
     s64 period;
     switch (refresh_rate) {
+    case SCE_VIDEO_OUT_REFRESH_RATE_UNKNOWN:
     case static_cast<u64>(SCE_VIDEO_OUT_REFRESH_RATE_ANY):
         return ORBIS_OK;
     case SCE_VIDEO_OUT_REFRESH_RATE_23_98HZ:
@@ -410,62 +444,69 @@ int VideoOutDriver::SetRefreshRate(VideoOutPort* port, u64 refresh_rate) {
     }
     std::scoped_lock lock{port->vo_mutex};
     port->resolution.refresh_rate = refresh_rate;
-    port->vblank_period = period;
+    const auto configured_rate = EmulatorSettings.GetVblankFrequency();
+    port->vblank_period = configured_rate == 60 ? period : 1000000000 / configured_rate;
     LOG_INFO(Lib_VideoOut, "Output refresh rate = {}, vblank period = {} ns", refresh_rate, period);
     return ORBIS_OK;
 }
 
 void VideoOutDriver::PresentThread(std::stop_token token) {
     Common::SetCurrentThreadName("shadPS4:PresentThread");
+    Common::SetCurrentThreadRealtime(main_port.GetVblankPeriod());
     u64 last_tick{};
 
     const auto receive_request = [this] -> Request {
         std::scoped_lock lk{mutex};
-        for (u32 offset = 0; offset < requests.size(); ++offset) {
-            const u32 index = (next_request_port + offset) % requests.size();
-            auto& queue = requests[index];
-            if (queue.empty()) {
-                continue;
-            }
-            const auto request = queue.front();
-            auto* port = request.port;
-            std::scoped_lock port_lock{port->vo_mutex};
-            const auto count = port->vblank_status.count / (port->flip_rate + 1);
-            if (count != last_flip_vblank[index]) {
-                queue.pop();
-                last_flip_vblank[index] = count;
-                next_request_port = (index + 1) % requests.size();
-                return request;
-            }
+        if (!present_requests.empty()) {
+            const auto request = present_requests.front();
+            present_requests.pop();
+            return request;
         }
         return {};
     };
 
     while (!token.stop_requested()) {
+        bool tick_changed;
         {
             std::unique_lock lock{mutex};
-            Common::CondvarWait(present_cv, lock, token, [&] { return present_tick != last_tick; });
+            Common::CondvarWait(present_cv, lock, token, [&] {
+                return present_tick != last_tick || !present_requests.empty();
+            });
+            tick_changed = present_tick != last_tick;
             last_tick = present_tick;
         }
         if (token.stop_requested()) {
             break;
         }
 
-        if (DebugState.IsGuestThreadsPaused()) {
-            DrawLastFrame();
-            continue;
-        }
-
         bool flipped = false;
         while (const auto request = receive_request()) {
-            Flip(request);
+            bool display;
+            bool hdr;
+            {
+                std::scoped_lock lock{mutex};
+                display = request.port->is_open && request.generation == request.port->generation &&
+                          (request.port == &main_port || !main_port.is_open);
+                hdr = request.port->is_hdr;
+            }
+            if (!display) {
+                presenter->DiscardFrame(request.frame);
+                continue;
+            }
+            presenter->SetHDR(hdr);
+            presenter->Present(request.frame);
             FRAME_END;
             flipped = true;
         }
-        if (!flipped) {
-            if (!main_port.is_open && !social_port.is_open) {
+        if (!flipped && tick_changed) {
+            bool any_open;
+            {
+                std::scoped_lock lock{mutex};
+                any_open = main_port.is_open || social_port.is_open;
+            }
+            if (!any_open) {
                 DrawBlankFrame();
-            } else if (ImGui::Core::MustKeepDrawing()) {
+            } else if (DebugState.IsGuestThreadsPaused() || ImGui::Core::MustKeepDrawing()) {
                 DrawLastFrame();
             }
         }
@@ -486,35 +527,55 @@ void VideoOutDriver::VblankThread(VideoOutPort* port, std::stop_token token) {
             timer = Common::AccurateTimer{period};
         }
         timer.Start();
-        if (!DebugState.IsGuestThreadsPaused()) {
-            Hmd::NotifyReprojection(handle, true, port == &main_port);
-            {
-                std::scoped_lock lock{port->vo_mutex};
-                auto& vblank_status = port->vblank_status;
-                for (auto event : port->vblank_events) {
-                    auto equeue = Kernel::GetEqueue(event);
-                    if (equeue != nullptr) {
-                        equeue->TriggerEvent(
-                            static_cast<u64>(OrbisVideoOutInternalEventId::Vblank),
-                            Kernel::OrbisKernelEvent::Filter::VideoOut,
-                            reinterpret_cast<void*>(
-                                static_cast<u64>(OrbisVideoOutInternalEventId::Vblank) |
-                                (vblank_status.count << 16)),
-                            port);
-                    }
-                }
-                vblank_status.count++;
-                vblank_status.process_time = Libraries::Kernel::sceKernelGetProcessTime();
-                vblank_status.tsc = Libraries::Kernel::sceKernelReadTsc();
-                port->vblank_cv.notify_all();
-            }
-            Hmd::NotifyReprojection(handle, false, port == &main_port);
-        }
         {
-            std::scoped_lock lock{mutex};
-            ++present_tick;
+            std::scoped_lock driver_lock{mutex};
+            if (port->is_open && !DebugState.IsGuestThreadsPaused()) {
+                Hmd::NotifyReprojection(handle, true, port == &main_port);
+                auto& queue = requests[handle - 1];
+                bool flip_ready;
+                {
+                    std::scoped_lock lock{port->vo_mutex};
+                    flip_ready =
+                        port->vblank_status.count % (static_cast<u64>(port->flip_rate) + 1) == 0;
+                }
+                if (flip_ready && !queue.empty() && presenter->IsFrameReady(queue.front().frame)) {
+                    const auto request = queue.front();
+                    queue.pop();
+                    Flip(request);
+                    present_requests.push(request);
+                }
+                {
+                    std::scoped_lock lock{port->vo_mutex};
+                    auto& vblank_status = port->vblank_status;
+                    for (auto event : port->vblank_events) {
+                        auto equeue = Kernel::GetEqueue(event);
+                        if (equeue != nullptr) {
+                            equeue->TriggerEvent(
+                                static_cast<u64>(OrbisVideoOutInternalEventId::Vblank),
+                                Kernel::OrbisKernelEvent::Filter::VideoOut,
+                                reinterpret_cast<void*>(
+                                    static_cast<u64>(OrbisVideoOutInternalEventId::Vblank) |
+                                    (vblank_status.count << 16)),
+                                port);
+                        }
+                    }
+                    vblank_status.count++;
+                    vblank_status.process_time = Libraries::Kernel::sceKernelGetProcessTime();
+                    vblank_status.tsc = Libraries::Kernel::sceKernelReadTsc();
+                    port->vblank_cv.notify_all();
+                }
+                Hmd::NotifyReprojection(handle, false, port == &main_port);
+            }
+            const bool display_tick = port == &main_port
+                                          ? main_port.is_open || !social_port.is_open
+                                          : social_port.is_open && !main_port.is_open;
+            if (display_tick) {
+                ++present_tick;
+            }
+            if (!present_requests.empty() || display_tick) {
+                present_cv.notify_one();
+            }
         }
-        present_cv.notify_one();
         timer.End();
     }
 }

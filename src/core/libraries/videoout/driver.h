@@ -7,6 +7,7 @@
 #include "common/polyfill_thread.h"
 #include "core/libraries/videoout/video_out.h"
 
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
@@ -36,6 +37,7 @@ struct VideoOutPort {
     int prev_index = -1;
     bool is_open = false;
     bool is_hdr = false;
+    u64 generation{};
     std::atomic<s64> vblank_period{};
 
     std::chrono::nanoseconds GetVblankPeriod() const {
@@ -106,6 +108,7 @@ private:
         s64 flip_arg;
         s32 index;
         bool eop;
+        u64 generation;
 
         operator bool() const noexcept {
             return frame != nullptr;
@@ -115,7 +118,8 @@ private:
     void Flip(const Request& req);
     void DrawBlankFrame(); // Video port out not open
     void DrawLastFrame();  // Used when there is no flip request
-    void SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_arg, bool is_eop = false);
+    void SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_arg, bool is_eop,
+                            u64 generation);
     void PresentThread(std::stop_token token);
     void VblankThread(VideoOutPort* port, std::stop_token token);
 
@@ -126,8 +130,7 @@ private:
     VideoOutPort social_port{};
     std::jthread present_thread;
     std::array<std::queue<Request>, 2> requests;
-    u32 next_request_port{};
-    std::array<u64, 2> last_flip_vblank{~u64{}, ~u64{}};
+    std::queue<Request> present_requests;
     std::array<std::jthread, 2> vblank_threads;
 };
 
