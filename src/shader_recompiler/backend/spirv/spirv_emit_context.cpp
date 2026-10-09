@@ -651,7 +651,12 @@ void EmitContext::DefineOutputs() {
             }
 
             if (needs_clip_distance_emulation) {
-                clip_distances = Id{DefineOutput(F32[MaxEmulatedClipDistances], 0)};
+                const Id type{F32[MaxEmulatedClipDistances]};
+                std::array<Id, MaxEmulatedClipDistances> zero;
+                zero.fill(f32_zero_value);
+                clip_distances = DefineVariable(type, std::nullopt, spv::StorageClass::Output,
+                                                ConstantComposite(type, zero));
+                Decorate(clip_distances, spv::Decoration::Location, 0);
                 output_params[num_attrs] = GetAttributeInfo(
                     AmdGpu::NumberFormat::Float, clip_distances, MaxEmulatedClipDistances, true);
                 Name(clip_distances, fmt::format("cldist_attr{}", 0));
