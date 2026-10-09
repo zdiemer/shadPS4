@@ -2072,7 +2072,7 @@ s32 PS4_SYSV_ABI sceAudio3dPortPush(const OrbisAudio3dPortId port_id,
 
     {
         std::scoped_lock lock{port.mutex};
-        if (port.mixed_queue.size() + port.spatial_queue.size() < depth) {
+        if (port.mixed_queue.empty() && port.spatial_queue.empty()) {
             return ORBIS_OK;
         }
     }
