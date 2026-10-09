@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -381,11 +382,25 @@ bool OpenXRContext::CreateSession(VkInstance instance, VkPhysicalDevice physical
     XrReferenceSpaceCreateInfo space_info{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
     space_info.poseInReferenceSpace.orientation.w = 1.0f;
     space_info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+    float camera_distance = 2.0f;
+    if (const char* value = std::getenv("SHADPS4_VR_CAMERA_DISTANCE")) {
+        char* end{};
+        const float distance = std::strtof(value, &end);
+        if (end != value && *end == '\0' && std::isfinite(distance) && distance >= 0.0f &&
+            distance <= 5.0f) {
+            camera_distance = distance;
+        } else {
+            LOG_WARNING(Render_Vulkan, "Invalid VR camera distance: {}", value);
+        }
+    }
+    space_info.poseInReferenceSpace.position.z = -camera_distance;
     if (XR_FAILED(xrCreateReferenceSpace(impl->session, &space_info, &impl->local_space))) {
         LOG_WARNING(Render_Vulkan, "Failed to create OpenXR local reference space");
         return false;
     }
+    LOG_INFO(Render_Vulkan, "OpenXR virtual camera distance: {} m", camera_distance);
     space_info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
+    space_info.poseInReferenceSpace.position = {};
     if (XR_FAILED(xrCreateReferenceSpace(impl->session, &space_info, &impl->view_space))) {
         LOG_WARNING(Render_Vulkan, "Failed to create OpenXR view reference space");
         return false;
