@@ -62,13 +62,43 @@ void CalculateOrientation(const Libraries::Pad::OrbisFVector3& angular_velocity,
 GameController::GameController(bool receive_vr_input_)
     : receive_vr_input{receive_vr_input_}, m_states_queue(64) {}
 
+void GameController::SetVrInputUser(std::optional<s32> user) {
+    std::lock_guard lock{m_state_mutex};
+    if (vr_input_user != user) {
+        vr_input_user = user;
+        m_states_queue.Clear();
+        vr_orientation_origin = {0.0f, 0.0f, 0.0f, 1.0f};
+        vr_touch_down_timestamp = 0;
+    }
+}
+
+bool GameController::HasVrUserLocked() const {
+    return receive_vr_input && vr_input_user && *vr_input_user == Vr::GetActiveUser();
+}
+
+bool GameController::IsVrInputActive() {
+    std::lock_guard lock{m_state_mutex};
+    const auto vr = Vr::GetDeviceState();
+    return HasVrUserLocked() && vr.session_running && vr.mounted &&
+           vr.controller_mode != Vr::ControllerMode::Move;
+}
+
 State GameController::GetStateLocked() {
     State state = m_state;
     if (!receive_vr_input) {
         return state;
     }
     const auto vr = Vr::GetDeviceState();
-    if (!vr.session_running || !vr.mounted || vr.controller_mode == Vr::ControllerMode::Move) {
+    const bool active = HasVrUserLocked() && vr.session_running && vr.mounted &&
+                        vr.controller_mode != Vr::ControllerMode::Move;
+    if (vr_input_active != active) {
+        vr_input_active = active;
+        m_states_queue.Clear();
+        if (!active) {
+            m_states_queue.Push(state);
+        }
+    }
+    if (!active) {
         vr_touch_down_timestamp = 0;
         return state;
     }
@@ -193,8 +223,10 @@ State GameController::ReadState() {
 
 std::optional<State> GameController::ReadMotionState() {
     std::lock_guard lock{m_state_mutex};
-    if ((receive_vr_input &&
-         Vr::GetDeviceState().pad_motion_source == Vr::PadMotionSource::VrController) ||
+    const auto vr = Vr::GetDeviceState();
+    if ((HasVrUserLocked() && vr.session_running && vr.mounted &&
+         vr.controller_mode != Vr::ControllerMode::Move &&
+         vr.pad_motion_source == Vr::PadMotionSource::VrController) ||
         !has_motion_sensors || !m_state.connected ||
         !SDL_GamepadSensorEnabled(m_sdl_gamepad, SDL_SENSOR_GYRO)) {
         return std::nullopt;
@@ -262,7 +294,7 @@ void GameController::PollState() {
         return;
     }
     const auto vr = Vr::GetDeviceState();
-    const bool pressed = vr.session_running && vr.mounted && vr.seated_pad &&
+    const bool pressed = HasVrUserLocked() && vr.session_running && vr.mounted && vr.seated_pad &&
                          (std::to_underlying(GetStateLocked().buttonsState) &
                           std::to_underlying(OrbisPadButtonDataOffset::Options)) != 0;
     if (!pressed) {
@@ -282,7 +314,8 @@ void GameController::ResetOrientation() {
     if (receive_vr_input) {
         const auto vr = Vr::GetDeviceState();
         const auto& motion = vr.controllers[1].active ? vr.controllers[1] : vr.controllers[0];
-        vr_orientation_origin = motion.active && motion.orientation_valid
+        vr_orientation_origin = HasVrUserLocked() && vr.session_running && vr.mounted &&
+                                        motion.active && motion.orientation_valid
                                     ? motion.grip_pose.orientation
                                     : std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f};
     }

@@ -31,6 +31,7 @@ static std::optional<u64> g_camera_timestamp;
 static u32 g_camera_frame{};
 static OrbisVrTrackerDevicePermitType g_camera_permit{ORBIS_VR_TRACKER_DEVICE_PERMIT_ALL};
 enum class CalibrationState { Idle, Requested, Sampling };
+static constexpr float MoveSphereOffset = 0.09f;
 static constexpr auto CalibrationSamplingDuration = std::chrono::milliseconds{100};
 struct Calibration {
     CalibrationState state{CalibrationState::Idle};
@@ -74,7 +75,7 @@ static bool HasPadVrInput() {
     const auto state = Input::Vr::GetDeviceState();
     return state.controller_mode != Input::Vr::ControllerMode::Move &&
            state.pad_motion_source != Input::Vr::PadMotionSource::Gamepad &&
-           Pad::GetController(g_pad_handle) == controllers[0];
+           Pad::GetController(g_pad_handle) == controllers[0] && controllers[0]->IsVrInputActive();
 }
 
 static void AdvanceCalibration() {
@@ -349,15 +350,15 @@ s32 PS4_SYSV_ABI sceVrTrackerRegisterDevice2(const OrbisVrTrackerDeviceType devi
 }
 
 s32 PS4_SYSV_ABI sceVrTrackerRegisterDeviceInternal(const OrbisVrTrackerDeviceType device_type,
-                                                    const s32 handle, s32 unk0, s32 unk1) {
+                                                    const s32 handle, s32 led_color, s32 unk1) {
     std::scoped_lock lock{g_mutex};
-    LOG_WARNING(Lib_VrTracker, "(STUBBED) called, device_type = {}, handle = {}",
-                static_cast<u32>(device_type), handle);
+    LOG_DEBUG(Lib_VrTracker, "device_type = {}, handle = {}", static_cast<u32>(device_type),
+              handle);
     if (!g_library_initialized) {
         return ORBIS_VR_TRACKER_ERROR_NOT_INIT;
     }
     if (device_type < ORBIS_VR_TRACKER_DEVICE_HMD || device_type > ORBIS_VR_TRACKER_DEVICE_GUN ||
-        handle < 0 || unk0 > 4) {
+        handle < 0 || led_color > 4) {
         return ORBIS_VR_TRACKER_ERROR_ARGUMENT_INVALID;
     }
 
@@ -375,8 +376,8 @@ s32 PS4_SYSV_ABI sceVrTrackerRegisterDeviceInternal(const OrbisVrTrackerDeviceTy
             return ORBIS_VR_TRACKER_ERROR_DEVICE_ALREADY_REGISTERED;
         }
         g_pad_handle = handle;
-        g_pad_led_color =
-            unk0 < 0 ? ORBIS_VR_TRACKER_LED_COLOR_BLUE : static_cast<OrbisVrTrackerLedColor>(unk0);
+        g_pad_led_color = led_color < 0 ? ORBIS_VR_TRACKER_LED_COLOR_BLUE
+                                        : static_cast<OrbisVrTrackerLedColor>(led_color);
         break;
     }
     case OrbisVrTrackerDeviceType::ORBIS_VR_TRACKER_DEVICE_MOVE: {
@@ -570,8 +571,8 @@ s32 PS4_SYSV_ABI sceVrTrackerGetResult(const OrbisVrTrackerGetResultParam* param
         std::array<float, 3> sphere_offset{};
         if (move_registered && position_valid) {
             const auto& q = controller.grip_pose.orientation;
-            sphere_offset =
-                Input::Vr::RotateToLocal({-q[0], -q[1], -q[2], q[3]}, {0.0f, 0.0f, -0.09f});
+            sphere_offset = Input::Vr::RotateToLocal({-q[0], -q[1], -q[2], q[3]},
+                                                     {0.0f, 0.0f, -MoveSphereOffset});
             for (size_t axis = 0; axis < sphere_offset.size(); ++axis) {
                 device_pose.position[axis] += sphere_offset[axis];
             }

@@ -45,6 +45,17 @@ static std::mutex g_handles_mutex;
 static std::unordered_map<HandleKey, s32, HandleKeyHash> pad_handle_map{};
 static std::unordered_map<s32, GameController*> handle_to_controller_map{};
 
+static void UpdateVrInputUser(GameController* controller) {
+    std::optional<s32> user;
+    for (const auto& [key, handle] : pad_handle_map) {
+        if (handle_to_controller_map.at(handle) == controller) {
+            user = key.id;
+            break;
+        }
+    }
+    controller->SetVrInputUser(user);
+}
+
 Input::GameController* GetController(s32 handle) {
     std::scoped_lock lock{g_handles_mutex};
     const auto it = handle_to_controller_map.find(handle);
@@ -54,15 +65,19 @@ Input::GameController* GetController(s32 handle) {
 int PS4_SYSV_ABI scePadClose(s32 handle) {
     std::scoped_lock lock{g_handles_mutex};
     LOG_WARNING(Lib_Pad, "called, handle: {}", handle);
-    if (handle_to_controller_map.erase(handle) == 0) {
+    const auto controller = handle_to_controller_map.find(handle);
+    if (controller == handle_to_controller_map.end()) {
         return ORBIS_PAD_ERROR_INVALID_HANDLE;
     }
+    auto* device = controller->second;
+    handle_to_controller_map.erase(controller);
     for (auto& it : pad_handle_map) {
         if (it.second == handle) {
             pad_handle_map.erase(it.first);
             break;
         }
     }
+    UpdateVrInputUser(device);
     return ORBIS_OK;
 }
 
@@ -352,6 +367,7 @@ int PS4_SYSV_ABI scePadOpen(Libraries::UserService::OrbisUserServiceUserId userI
         controllers[type == (EmulatorSettings.IsUsingSpecialPad() ? 2 : 0)
                         ? UserManagement.GetUserByID(userId)->player_index - 1
                         : 4];
+    UpdateVrInputUser(handle_to_controller_map[new_handle]);
     LOG_INFO(Lib_Pad,
              "called user_id = {}, type = {}, index = {}, player index = {}, out handle = {}",
              userId, type, index, u->player_index, new_handle);

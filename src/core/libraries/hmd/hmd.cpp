@@ -22,6 +22,9 @@ static std::atomic<Libraries::UserService::OrbisUserServiceUserId> g_user_id{-1}
 
 void BindDeviceToUser(Libraries::UserService::OrbisUserServiceUserId user_id) {
     g_user_id = user_id;
+    if (Input::Vr::GetActiveUser() >= 0) {
+        Input::Vr::SetActiveUser(user_id);
+    }
 }
 
 static OrbisHmdDeviceStatus GetDeviceStatus(const Input::Vr::DeviceState& state) {
@@ -94,6 +97,7 @@ s32 PS4_SYSV_ABI sceHmdOpen(Libraries::UserService::OrbisUserServiceUserId user_
     // Internal libSceVrTracker logic requires this handle to be different from other devices.
     g_user_id = user_id;
     g_internal_handle = 0xf000000;
+    Input::Vr::SetActiveUser(user_id);
     return g_internal_handle;
 }
 
@@ -226,6 +230,7 @@ s32 PS4_SYSV_ABI sceHmdClose(s32 handle) {
 
     g_internal_handle = 0;
     g_user_id = -1;
+    Input::Vr::SetActiveUser(-1);
     return ORBIS_OK;
 }
 
@@ -236,6 +241,9 @@ s32 PS4_SYSV_ABI sceHmdTerminate() {
     }
     sceHmdDistortionTerminate();
     ResetReprojection();
+    g_internal_handle = 0;
+    g_user_id = -1;
+    Input::Vr::SetActiveUser(-1);
     g_library_initialized = false;
     return ORBIS_OK;
 }

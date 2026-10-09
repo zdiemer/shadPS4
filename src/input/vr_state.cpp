@@ -4,6 +4,7 @@
 #include "input/vr_state.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <deque>
 #include <mutex>
@@ -17,6 +18,7 @@ namespace {
 
 std::mutex g_mutex;
 DeviceState g_state;
+std::atomic<std::int32_t> g_active_user{-1};
 std::optional<std::array<FieldOfView, 2>> g_render_field_of_view;
 std::optional<std::array<float, 3>> g_seated_pad_position;
 std::array<std::uint8_t, 2> g_controller_vibration{};
@@ -58,6 +60,24 @@ void UpdateSeatedPadPosition(const DeviceState& state) {
 DeviceState GetDeviceState() {
     std::scoped_lock lock{g_mutex};
     return g_state;
+}
+
+std::int32_t GetActiveUser() {
+    return g_active_user.load();
+}
+
+void SetActiveUser(std::int32_t user) {
+    std::scoped_lock lock{g_mutex};
+    if (g_active_user.exchange(user) != user) {
+        g_controller_history.clear();
+        g_controller_vibration = {};
+    }
+}
+
+void ResetTrackingOrigin() {
+    std::scoped_lock lock{g_mutex};
+    g_seated_pad_position.reset();
+    g_controller_history.clear();
 }
 
 void SetDeviceState(const DeviceState& state) {

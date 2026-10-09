@@ -107,6 +107,9 @@ struct ControllerSample {
 
 DeviceState GetDeviceState();
 void SetDeviceState(const DeviceState& state);
+std::int32_t GetActiveUser();
+void SetActiveUser(std::int32_t user);
+void ResetTrackingOrigin();
 std::array<FieldOfView, 2> GetRenderFieldOfView();
 std::optional<std::array<float, 3>> GetSeatedPadPosition();
 bool RecenterSeatedPad();

@@ -101,6 +101,8 @@ public:
     void UpdateAcceleration(const float acceleration[3]);
     void PollState();
     void ResetOrientation();
+    void SetVrInputUser(std::optional<s32> user);
+    bool IsVrInputActive();
     void SetLightBarRGB(u8 const r, u8 const g, u8 const b);
     void SetLightBarRGB(Colour const c);
     Colour GetLightBarRGB();
@@ -115,6 +117,9 @@ public:
 private:
     State GetStateLocked();
     bool receive_vr_input{};
+    std::optional<s32> vr_input_user;
+    bool vr_input_active{};
+    bool HasVrUserLocked() const;
     bool has_motion_sensors{};
     std::optional<std::chrono::steady_clock::time_point> vr_recenter_started;
     bool vr_recenter_held{};
