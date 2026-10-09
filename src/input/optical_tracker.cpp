@@ -179,6 +179,9 @@ bool OpticalTracker::LoadCalibration(const std::filesystem::path& path) {
     calibrated = false;
     cached_sequence = 0;
     cached_position.reset();
+    tracked_position.reset();
+    pending_position.reset();
+    pending_frames = 0;
     std::ifstream input{path};
     if (!input) {
         return false;
@@ -235,6 +238,11 @@ std::optional<std::array<float, 3>> OpticalTracker::Locate(const StereoCameraFra
     if (frame.sequence == cached_sequence && colour == cached_colour) {
         return cached_position;
     }
+    if (colour != cached_colour) {
+        tracked_position.reset();
+        pending_position.reset();
+        pending_frames = 0;
+    }
     cached_sequence = frame.sequence;
     cached_colour = colour;
     cached_position.reset();
@@ -251,6 +259,9 @@ std::optional<std::array<float, 3>> OpticalTracker::Locate(const StereoCameraFra
     }
     double best_score = std::numeric_limits<double>::max();
     double second_score = best_score;
+    const double elapsed = std::chrono::duration<double>(frame.sample_time - tracked_time).count();
+    const bool continuous = tracked_position && elapsed > 0 && elapsed <= 0.25;
+    const double maximum_displacement = 0.03 + 5.0 * elapsed;
     for (const auto& left : blobs[0]) {
         for (const auto& right : blobs[1]) {
             const double area_ratio = static_cast<double>(left.area) / right.area;
@@ -284,7 +295,18 @@ std::optional<std::array<float, 3>> OpticalTracker::Locate(const StereoCameraFra
             if (!std::isfinite(error) || gap > 0.02 || error > 3) {
                 continue;
             }
-            const double score = error + std::abs(std::log(area_ratio));
+            double score = error + std::abs(std::log(area_ratio));
+            if (continuous) {
+                Vector movement{};
+                for (size_t axis = 0; axis < 3; ++axis) {
+                    movement[axis] = point[axis] - tracked_position->at(axis);
+                }
+                const double displacement = std::sqrt(Dot(movement, movement));
+                if (displacement > maximum_displacement) {
+                    continue;
+                }
+                score += displacement / maximum_displacement;
+            }
             if (score < best_score) {
                 second_score = best_score;
                 best_score = score;
@@ -298,6 +320,35 @@ std::optional<std::array<float, 3>> OpticalTracker::Locate(const StereoCameraFra
     if (second_score - best_score < 0.25) {
         cached_position.reset();
     }
+    if (!cached_position) {
+        pending_position.reset();
+        pending_frames = 0;
+        return std::nullopt;
+    }
+    if (tracked_position && !continuous) {
+        const double pending_elapsed =
+            std::chrono::duration<double>(frame.sample_time - pending_time).count();
+        Vector movement{};
+        if (pending_position) {
+            for (size_t axis = 0; axis < 3; ++axis) {
+                movement[axis] = cached_position->at(axis) - pending_position->at(axis);
+            }
+        }
+        if (!pending_position || pending_elapsed <= 0 || pending_elapsed > 0.1 ||
+            std::sqrt(Dot(movement, movement)) > 0.03 + 5.0 * pending_elapsed) {
+            pending_frames = 0;
+        }
+        pending_position = cached_position;
+        pending_time = frame.sample_time;
+        if (++pending_frames < 3) {
+            cached_position.reset();
+            return std::nullopt;
+        }
+    }
+    tracked_position = cached_position;
+    tracked_time = frame.sample_time;
+    pending_position.reset();
+    pending_frames = 0;
     return cached_position;
 }
 
