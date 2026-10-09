@@ -58,8 +58,10 @@ struct ControllerState {
     bool aim_valid{};
     std::array<float, 3> linear_velocity{};
     std::array<float, 3> angular_velocity{};
+    std::array<float, 3> linear_acceleration{};
     bool linear_velocity_valid{};
     bool angular_velocity_valid{};
+    bool linear_acceleration_valid{};
 };
 
 enum class ControllerMode {

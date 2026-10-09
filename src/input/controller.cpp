@@ -138,8 +138,15 @@ State GameController::GetStateLocked() const {
     if (motion.active && motion.orientation_valid) {
         const auto q = Vr::RelativeOrientation(motion.grip_pose.orientation, vr_orientation_origin);
         state.orientation = {q[0], q[1], q[2], q[3]};
-        const auto gravity = Vr::RotateToLocal(motion.grip_pose.orientation, {0.0f, 9.81f, 0.0f});
-        state.acceleration = {gravity[0], gravity[1], gravity[2]};
+        std::array<float, 3> acceleration{0.0f, 9.81f, 0.0f};
+        if (motion.linear_acceleration_valid) {
+            for (size_t axis = 0; axis < acceleration.size(); ++axis) {
+                acceleration[axis] += motion.linear_acceleration[axis];
+            }
+        }
+        const auto local_acceleration =
+            Vr::RotateToLocal(motion.grip_pose.orientation, acceleration);
+        state.acceleration = {local_acceleration[0], local_acceleration[1], local_acceleration[2]};
     }
     if (motion.active && motion.orientation_valid && motion.angular_velocity_valid) {
         const auto v = Vr::RotateToLocal(motion.grip_pose.orientation, motion.angular_velocity);
