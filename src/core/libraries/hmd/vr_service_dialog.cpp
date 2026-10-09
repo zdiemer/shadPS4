@@ -112,6 +112,9 @@ CommonDialog::Status PS4_SYSV_ABI sceVrServiceDialogUpdateStatus() {
             g_result.result = CommonDialog::Result::OK;
             g_status = CommonDialog::Status::FINISHED;
             LOG_DEBUG(Lib_VrServiceDialog, "VR service ready");
+        } else if (!state.connected) {
+            g_result.result = CommonDialog::Result::USER_CANCELED;
+            g_status = CommonDialog::Status::FINISHED;
         }
     }
     return g_status;

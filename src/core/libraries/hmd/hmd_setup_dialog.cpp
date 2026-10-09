@@ -94,6 +94,9 @@ Libraries::CommonDialog::Status PS4_SYSV_ABI sceHmdSetupDialogUpdateStatus() {
             g_result.result = CommonDialog::Result::OK;
             g_status = Status::FINISHED;
             LOG_DEBUG(Lib_HmdSetupDialog, "HMD setup completed");
+        } else if (!state.connected) {
+            g_result.result = CommonDialog::Result::USER_CANCELED;
+            g_status = Status::FINISHED;
         }
     }
     return g_status;
