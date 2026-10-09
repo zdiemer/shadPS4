@@ -70,8 +70,15 @@ enum class ControllerMode {
     Move,
 };
 
+enum class PadMotionSource {
+    Auto,
+    Gamepad,
+    VrController,
+};
+
 struct DeviceState {
     ControllerMode controller_mode{ControllerMode::Both};
+    PadMotionSource pad_motion_source{PadMotionSource::Auto};
     bool connected{};
     bool session_running{};
     bool mounted{};
