@@ -103,25 +103,25 @@ enum class Class {
     Lib_Hmd,                 ///< The LibSceHmd implementation.
     Lib_HmdSetupDialog,      ///< The LibSceHmdSetupDialog implementation.
     Lib_VrServiceDialog,
-    Lib_SigninDialog,        ///< The LibSigninDialog implementation.
-    Lib_Camera,              ///< The LibCamera implementation.
-    Lib_CompanionHttpd,      ///< The LibCompanionHttpd implementation.
-    Lib_CompanionUtil,       ///< The LibCompanionUtil implementation.
-    Lib_ContentExport,       ///< The LibSceContentExport implementation.
-    Lib_VrTracker,           ///< The LibSceVrTracker implementation.
-    Lib_Font,                ///< The libSceFont implementation.
-    Lib_FontFt,              ///< The libSceFontFt implementation.
-    Frontend,                ///< Emulator UI
-    NpHandler,               ///< NpHandler shadNet manager
-    Render,                  ///< Video Core
-    Render_Vulkan,           ///< Vulkan backend
-    Render_Recompiler,       ///< Shader recompiler
-    ShadNet,                 ///< shadNet binary protocol client
-    ImGui,                   ///< ImGui
-    Loader,                  ///< ROM loader
-    Input,                   ///< Input emulation
-    Tty,                     ///< Debug output from emu
-    Count                    ///< Total number of logging classes
+    Lib_SigninDialog,   ///< The LibSigninDialog implementation.
+    Lib_Camera,         ///< The LibCamera implementation.
+    Lib_CompanionHttpd, ///< The LibCompanionHttpd implementation.
+    Lib_CompanionUtil,  ///< The LibCompanionUtil implementation.
+    Lib_ContentExport,  ///< The LibSceContentExport implementation.
+    Lib_VrTracker,      ///< The LibSceVrTracker implementation.
+    Lib_Font,           ///< The libSceFont implementation.
+    Lib_FontFt,         ///< The libSceFontFt implementation.
+    Frontend,           ///< Emulator UI
+    NpHandler,          ///< NpHandler shadNet manager
+    Render,             ///< Video Core
+    Render_Vulkan,      ///< Vulkan backend
+    Render_Recompiler,  ///< Shader recompiler
+    ShadNet,            ///< shadNet binary protocol client
+    ImGui,              ///< ImGui
+    Loader,             ///< ROM loader
+    Input,              ///< Input emulation
+    Tty,                ///< Debug output from emu
+    Count               ///< Total number of logging classes
 };
 static constexpr int NUM_LOG_CLASSES = static_cast<int>(Class::Count);
 

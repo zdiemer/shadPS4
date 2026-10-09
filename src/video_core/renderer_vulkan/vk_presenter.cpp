@@ -965,7 +965,7 @@ void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
                 texture_cache.UpdateImage(sources[layer][eye]);
             }
         }
-        const bool submitted = openxr->RenderStereo(
+        openxr->RenderStereo(
             poses, fovs,
             [&](const auto& targets, const auto& sizes) {
                 draw_scheduler.EndRendering();
@@ -1084,27 +1084,6 @@ void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
                 return true;
             },
             frame.head_locked);
-        if (submitted) {
-            static u64 submitted_count{};
-            static u64 reported_count{};
-            static auto reported_time = std::chrono::steady_clock::now();
-            if (++submitted_count == 1 || submitted_count % 300 == 0) {
-                const auto now = std::chrono::steady_clock::now();
-                const double seconds = std::chrono::duration<double>(now - reported_time).count();
-                if (submitted_count == 1) {
-                    LOG_INFO(Render_Vulkan, "Submitted OpenXR stereo frame {} (guest {})",
-                             submitted_count, frame.frame_number);
-                } else {
-                    LOG_INFO(Render_Vulkan,
-                             "Submitted OpenXR stereo frame {} (guest {}): {:.2f} stereo "
-                             "submissions/s over {:.2f}s",
-                             submitted_count, frame.frame_number,
-                             (submitted_count - reported_count) / seconds, seconds);
-                }
-                reported_count = submitted_count;
-                reported_time = now;
-            }
-        }
     });
 }
 

@@ -289,7 +289,8 @@ vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool e
     const auto layers = GetInstanceLayers(enable_validation, enable_crash_diagnostic);
     auto extensions = GetLayerExtensions(GetInstanceExtensions(window_type, true), layers);
     for (const auto& name : additional_extensions) {
-        if (std::ranges::none_of(extensions, [&](const char* existing) { return name == existing; })) {
+        if (std::ranges::none_of(extensions,
+                                 [&](const char* existing) { return name == existing; })) {
             extensions.push_back(name.c_str());
         }
     }

@@ -54,13 +54,13 @@ s32 PS4_SYSV_ABI sceHmdSetupDialogOpen(const OrbisHmdSetupDialogParam* param) {
         return static_cast<s32>(Error::BUSY);
     }
     if (param == nullptr) {
-        return static_cast<s32>(Libraries::CommonDialog::Error::ARG_NULL);
+        return static_cast<s32>(Error::ARG_NULL);
     }
     if (param->size != sizeof(OrbisHmdSetupDialogParam) ||
         param->base_param.size != sizeof(CommonDialog::BaseParam) ||
         param->user_id == Libraries::UserService::ORBIS_USER_SERVICE_USER_ID_INVALID ||
         param->user_id == Libraries::UserService::ORBIS_USER_SERVICE_USER_ID_SYSTEM) {
-        return static_cast<s32>(Libraries::CommonDialog::Error::PARAM_INVALID);
+        return static_cast<s32>(Error::PARAM_INVALID);
     }
     LOG_DEBUG(Lib_HmdSetupDialog, "user_id = {}, size = {}", param->user_id, param->size);
     g_setup_user_id = param->user_id;
@@ -79,7 +79,7 @@ s32 PS4_SYSV_ABI sceHmdSetupDialogGetResult(OrbisHmdSetupDialogResult* result) {
         return static_cast<s32>(Error::NOT_FINISHED);
     }
     if (result == nullptr) {
-        return static_cast<s32>(Libraries::CommonDialog::Error::ARG_NULL);
+        return static_cast<s32>(Error::ARG_NULL);
     }
     *result = g_result;
     return ORBIS_OK;

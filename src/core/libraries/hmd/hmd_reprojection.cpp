@@ -330,7 +330,9 @@ s32 PS4_SYSV_ABI sceHmdReprojectionInitializeCapture() {
     return ORBIS_OK;
 }
 
-s32 PS4_SYSV_ABI sceHmdReprojectionQueryGarlicBuffAlign() { return 0x100; }
+s32 PS4_SYSV_ABI sceHmdReprojectionQueryGarlicBuffAlign() {
+    return 0x100;
+}
 
 s32 PS4_SYSV_ABI sceHmdReprojectionQueryGarlicBuffSize() {
     return 0x100000;
