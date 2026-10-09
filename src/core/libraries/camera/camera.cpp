@@ -263,7 +263,8 @@ s32 PS4_SYSV_ABI sceCameraOpen(Libraries::UserService::OrbisUserServiceUserId us
 
         InitializeVrCameraBuffers(remaining_camera_buf);
 
-        ASSERT(remaining_camera_buf + 5440000 <= (u8*)camera_garlic_pool + camera_system_mem_size);
+        ASSERT(remaining_camera_buf + VrCameraBufferSize <=
+               (u8*)camera_garlic_pool + camera_system_mem_size);
 
         ASSERT(Core::Memory::Instance()->IsValidGpuMapping((VAddr)camera_garlic_pool,
                                                            camera_system_mem_size));

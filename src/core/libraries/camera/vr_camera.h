@@ -7,6 +7,15 @@
 
 namespace Libraries::Camera {
 
+constexpr u32 VrCameraBufferLevels = 4;
+constexpr u32 VrCameraBufferSize = [] {
+    u32 size{};
+    for (u32 level = 0; level < VrCameraBufferLevels; ++level) {
+        size += 2 * (1280 >> level) * (800 >> level) * sizeof(u16);
+    }
+    return size;
+}();
+
 bool IsVrCameraAvailable();
 bool IsVrCameraActive();
 void OpenVrCamera();

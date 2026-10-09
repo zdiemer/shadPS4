@@ -18,7 +18,7 @@ namespace Libraries::Camera {
 
 namespace {
 std::mutex g_vr_camera_mutex;
-std::array<std::array<u8*, 4>, 2> g_buffers{};
+std::array<std::array<u8*, VrCameraBufferLevels>, 2> g_buffers{};
 std::array<u32, 2> g_levels{};
 bool g_started{};
 std::atomic<bool> g_opened{};
