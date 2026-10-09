@@ -6,12 +6,15 @@
 #include <atomic>
 #include <cstring>
 #include <mutex>
+#include <optional>
 #include <utility>
+#include <vector>
 
 #include "core/emulator_settings.h"
 #include "core/libraries/camera/camera_helpers.h"
 #include "core/libraries/camera/vr_camera.h"
 #include "core/libraries/kernel/time.h"
+#include "input/psvr_camera.h"
 #include "input/vr_state.h"
 
 namespace Libraries::Camera {
@@ -26,6 +29,72 @@ std::array<u32, 2> g_auto_exposure{};
 std::array<u32, 2> g_auto_white_balance{};
 std::array<OrbisCameraWhiteBalance, 2> g_white_balance{};
 std::array<OrbisCameraExposureGain, 2> g_exposure{};
+Input::PsvrCamera g_physical_camera;
+bool g_physical_started{};
+u64 g_physical_sequence{};
+u64 g_physical_timestamp{};
+
+std::optional<SDL_CameraID> GetPhysicalCamera() {
+    const auto index = EmulatorSettings.GetCameraId();
+    if (index < 0) {
+        return std::nullopt;
+    }
+    int count{};
+    auto* devices = SDL_GetCameras(&count);
+    std::optional<SDL_CameraID> result;
+    if (index < count && Input::PsvrCamera::IsDevice(devices[index])) {
+        result = devices[index];
+    }
+    SDL_free(devices);
+    return result;
+}
+
+void CopyPhysicalPlane(const Input::StereoCameraFrame& frame, u32 channel, u32 width, u32 height,
+                       u32 level, u32 format, u8* buffer) {
+    const auto& source = frame.images[channel];
+    const bool raw = level == 0 && format != ORBIS_CAMERA_FORMAT_YUV422;
+    std::vector<u8> scaled;
+    if (raw) {
+        scaled.resize(static_cast<size_t>(width) * height * 2);
+    }
+    auto* target = raw ? scaled.data() : buffer;
+    for (u32 y = 0; y < height; ++y) {
+        const u32 source_y = y * frame.height / height;
+        for (u32 x = 0; x < width; x += 2) {
+            const auto* row = source.data() + source_y * frame.width * 2;
+            const u32 source_x = x * frame.width / width;
+            const u32 next_x = std::min(x + 1, width - 1) * frame.width / width;
+            const auto* pair = row + (source_x & ~1u) * 2;
+            const u8 first = row[source_x * 2];
+            const u8 second = row[next_x * 2];
+            const u32 offset = y * width + x;
+            if (raw || format == ORBIS_CAMERA_SCALE_FORMAT_YUV422) {
+                target[offset * 2] = first;
+                target[offset * 2 + 1] = pair[1];
+                if (x + 1 < width) {
+                    target[offset * 2 + 2] = second;
+                    target[offset * 2 + 3] = pair[3];
+                }
+            } else if (format == ORBIS_CAMERA_SCALE_FORMAT_Y16) {
+                auto* output = reinterpret_cast<u16*>(target);
+                output[offset] = static_cast<u16>(first) << 2;
+                if (x + 1 < width) {
+                    output[offset + 1] = static_cast<u16>(second) << 2;
+                }
+            } else {
+                target[offset] = first;
+                if (x + 1 < width) {
+                    target[offset + 1] = second;
+                }
+            }
+        }
+    }
+    if (raw && format == ORBIS_CAMERA_FORMAT_RAW16) {
+        ConvertYUY2ToRAW16(scaled.data(), reinterpret_cast<u16*>(buffer), width, height);
+    } else if (raw) {
+        ConvertYUY2ToRAW8(scaled.data(), buffer, width, height);
+    }
+}
 
 std::pair<u32, u32> GetDimensions(const OrbisCameraConfigExtention& config) {
     switch (config.resolution) {
@@ -48,7 +117,8 @@ std::pair<u32, u32> GetDimensions(const OrbisCameraConfigExtention& config) {
 } // namespace
 
 bool IsVrCameraAvailable() {
-    return EmulatorSettings.GetCameraId() == -1 && Input::Vr::GetDeviceState().connected;
+    return Input::Vr::GetDeviceState().connected &&
+           (EmulatorSettings.GetCameraId() == -1 || GetPhysicalCamera().has_value());
 }
 
 bool IsVrCameraActive() {
@@ -71,6 +141,8 @@ void CloseVrCamera() {
     std::scoped_lock lock{g_vr_camera_mutex};
     g_started = false;
     g_opened = false;
+    g_physical_camera.Close();
+    g_physical_started = false;
 }
 
 void InitializeVrCameraBuffers(u8* memory) {
@@ -198,6 +270,14 @@ s32 StartVrCamera(const OrbisCameraStartParameter& param) {
         (param.formatLevel[0] | param.formatLevel[1]) == 0) {
         return ORBIS_CAMERA_ERROR_PARAM;
     }
+    if (const auto device = GetPhysicalCamera()) {
+        if (!g_physical_camera.Open(*device)) {
+            return ORBIS_CAMERA_ERROR_FATAL;
+        }
+        g_physical_started = true;
+        g_physical_sequence = 0;
+        g_physical_timestamp = 0;
+    }
     g_levels = {param.formatLevel[0], param.formatLevel[1]};
     g_started = true;
     return ORBIS_OK;
@@ -209,6 +289,8 @@ s32 StopVrCamera() {
         return ORBIS_CAMERA_ERROR_NOT_START;
     }
     g_started = false;
+    g_physical_camera.Close();
+    g_physical_started = false;
     return ORBIS_OK;
 }
 
@@ -227,6 +309,17 @@ s32 ReadVrCamera(OrbisCameraFrameData* frame_data) {
     }
     OrbisCameraFrameData result{.sizeThis = size, .readMode = frame_data->readMode};
     const u64 time = Kernel::sceKernelGetProcessTime();
+    std::shared_ptr<const Input::StereoCameraFrame> physical_frame;
+    if (g_physical_started) {
+        physical_frame = g_physical_camera.ReadFrame();
+        if (!physical_frame) {
+            return ORBIS_CAMERA_ERROR_BUSY;
+        }
+        if (physical_frame->sequence != g_physical_sequence) {
+            g_physical_sequence = physical_frame->sequence;
+            g_physical_timestamp = time;
+        }
+    }
     const std::array configs{output_config0, output_config1};
     for (u32 channel = 0; channel < configs.size(); ++channel) {
         const auto& config = configs[channel];
@@ -240,6 +333,12 @@ s32 ReadVrCamera(OrbisCameraFrameData* frame_data) {
                                          : time * static_cast<u32>(config.framerate) / 1000000;
         result.meta.timestamp[channel] = time;
         result.meta.deviceTimestamp[channel] = static_cast<u32>(time);
+        if (physical_frame) {
+            result.meta.frame[channel] = g_physical_sequence;
+            result.meta.timestamp[channel] = g_physical_timestamp;
+            result.meta.deviceTimestamp[channel] =
+                static_cast<u32>(physical_frame->timestamp_ns / 1000);
+        }
         result.meta.exposureGain[channel] = g_exposure[channel];
         result.meta.whiteBalance[channel] = g_white_balance[channel];
         for (u32 level = 0; level < formats.size(); ++level) {
@@ -255,7 +354,10 @@ s32 ReadVrCamera(OrbisCameraFrameData* frame_data) {
             const u32 byte_size = level_width * level_height * bytes_per_pixel;
             auto* buffer = g_buffers[channel][level];
             std::memset(buffer, 0, byte_size);
-            if (formats[level] == 0) {
+            if (physical_frame) {
+                CopyPhysicalPlane(*physical_frame, channel, level_width, level_height, level,
+                                  formats[level], buffer);
+            } else if (formats[level] == 0) {
                 for (u32 offset = 0; offset < byte_size; offset += 4) {
                     const std::array<u8, 4> black{16, 128, 16, 128};
                     std::memcpy(buffer + offset, black.data(),
