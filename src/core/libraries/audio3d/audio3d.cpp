@@ -735,6 +735,7 @@ s32 PS4_SYSV_ABI sceAudio3dPortAdvance(const OrbisAudio3dPortId port_id) {
     }
 
     auto& port = state->ports[port_id];
+    std::scoped_lock lock{port.mutex};
 
     if (port.parameters.buffer_mode == OrbisAudio3dBufferMode::ORBIS_AUDIO3D_BUFFER_NO_ADVANCE) {
         LOG_ERROR(Lib_Audio3d, "port doesn't have advance capability");
