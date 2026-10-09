@@ -482,6 +482,11 @@ struct VulkanSettings {
     Setting<bool> vkguest_markers{false};
     Setting<bool> pipeline_cache_enabled{false};
     Setting<bool> pipeline_cache_archived{false};
+    Setting<bool> openxr_enabled{false};
+    Setting<std::string> vr_controller_mode{"both"};
+    Setting<std::string> vr_pad_motion_source{"auto"};
+    Setting<std::string> vr_pad_position_mode{"none"};
+    Setting<float> vr_camera_distance{2.0f};
 
     std::vector<OverrideItem> GetOverrideableFields() const {
         return std::vector<OverrideItem>{
@@ -503,6 +508,15 @@ struct VulkanSettings {
                                           &VulkanSettings::pipeline_cache_enabled),
             make_override<VulkanSettings>("pipeline_cache_archived",
                                           &VulkanSettings::pipeline_cache_archived),
+            make_override<VulkanSettings>("openxr_enabled", &VulkanSettings::openxr_enabled),
+            make_override<VulkanSettings>("vr_controller_mode",
+                                          &VulkanSettings::vr_controller_mode),
+            make_override<VulkanSettings>("vr_pad_motion_source",
+                                          &VulkanSettings::vr_pad_motion_source),
+            make_override<VulkanSettings>("vr_pad_position_mode",
+                                          &VulkanSettings::vr_pad_position_mode),
+            make_override<VulkanSettings>("vr_camera_distance",
+                                          &VulkanSettings::vr_camera_distance),
         };
     }
 };
@@ -510,7 +524,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(VulkanSettings, gpu_id, renderdoc_enabled, vk
                                    vkvalidation_core_enabled, vkvalidation_sync_enabled,
                                    vkvalidation_gpu_enabled, vkcrash_diagnostic_enabled,
                                    vkhost_markers, vkguest_markers, pipeline_cache_enabled,
-                                   pipeline_cache_archived)
+                                   pipeline_cache_archived, openxr_enabled, vr_controller_mode,
+                                   vr_pad_motion_source, vr_pad_position_mode, vr_camera_distance)
 
 // -------------------------------
 // Main manager
@@ -606,6 +621,7 @@ private:
 
     static void PrintChangedSummary(const std::vector<std::string>& changed);
     void MigrateNetworkKeys(const nlohmann::json& general, const nlohmann::json& network);
+    void ApplyVrEnvironmentOverrides();
 
 public:
     // Add these getters to access overrideable fields
@@ -789,6 +805,11 @@ public:
     SETTING_FORWARD_BOOL(m_vulkan, VkGuestMarkersEnabled, vkguest_markers)
     SETTING_FORWARD_BOOL(m_vulkan, PipelineCacheEnabled, pipeline_cache_enabled)
     SETTING_FORWARD_BOOL(m_vulkan, PipelineCacheArchived, pipeline_cache_archived)
+    SETTING_FORWARD_BOOL(m_vulkan, OpenXrEnabled, openxr_enabled)
+    SETTING_FORWARD(m_vulkan, VrControllerMode, vr_controller_mode)
+    SETTING_FORWARD(m_vulkan, VrPadMotionSource, vr_pad_motion_source)
+    SETTING_FORWARD(m_vulkan, VrPadPositionMode, vr_pad_position_mode)
+    SETTING_FORWARD(m_vulkan, VrCameraDistance, vr_camera_distance)
 
 #undef SETTING_FORWARD
 #undef SETTING_FORWARD_BOOL

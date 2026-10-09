@@ -2,15 +2,20 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <fstream>
+#include <initializer_list>
 #include <iomanip>
 #include <map>
+#include <string_view>
 #include <common/path_util.h>
 #include <common/scm_rev.h>
 #include <toml.hpp>
 #include "common/assert.h"
 #include "common/logging/formatter.h"
 #include "common/logging/log.h"
+#include "common/scope_exit.h"
 #include "emulator_settings.h"
 #include "emulator_state.h"
 
@@ -353,6 +358,9 @@ void EmulatorSettingsImpl::MigrateNetworkKeys(const json& general, const json& n
 // ── Load ──────────────────────────────────────────────────────────────
 
 bool EmulatorSettingsImpl::Load(const std::string& serial) {
+    SCOPE_EXIT {
+        ApplyVrEnvironmentOverrides();
+    };
     // A newly loaded profile replaces, rather than extends, the previous profile.
     ClearGameSpecificOverrides();
 
@@ -489,6 +497,40 @@ bool EmulatorSettingsImpl::Load(const std::string& serial) {
     } catch (const std::exception& e) {
         UNREACHABLE_MSG("Error loading settings: {}", e.what());
         return false;
+    }
+}
+
+void EmulatorSettingsImpl::ApplyVrEnvironmentOverrides() {
+    if (const char* value = std::getenv("SHADPS4_OPENXR")) {
+        const std::string_view enabled{value};
+        if (enabled == "0" || enabled == "1") {
+            m_vulkan.openxr_enabled.set(enabled == "1", true);
+        } else {
+            LOG_WARNING(Config, "Invalid OpenXR enable override: {}", value);
+        }
+    }
+    const auto apply_mode = [](const char* name, Setting<std::string>& setting,
+                               std::initializer_list<std::string_view> modes) {
+        if (const char* value = std::getenv(name)) {
+            if (std::ranges::find(modes, std::string_view{value}) != modes.end()) {
+                setting.set(value, true);
+            } else {
+                LOG_WARNING(Config, "Invalid {} override: {}", name, value);
+            }
+        }
+    };
+    apply_mode("SHADPS4_VR_INPUT", m_vulkan.vr_controller_mode, {"both", "pad", "move"});
+    apply_mode("SHADPS4_VR_PAD_MOTION", m_vulkan.vr_pad_motion_source, {"auto", "gamepad", "vr"});
+    apply_mode("SHADPS4_VR_PAD_POSITION", m_vulkan.vr_pad_position_mode, {"none", "seated"});
+    if (const char* value = std::getenv("SHADPS4_VR_CAMERA_DISTANCE")) {
+        char* end{};
+        const float distance = std::strtof(value, &end);
+        if (end != value && *end == '\0' && std::isfinite(distance) && distance >= 0.0f &&
+            distance <= 5.0f) {
+            m_vulkan.vr_camera_distance.set(distance, true);
+        } else {
+            LOG_WARNING(Config, "Invalid VR camera distance override: {}", value);
+        }
     }
 }
 
