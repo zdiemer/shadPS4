@@ -131,7 +131,8 @@ State GameController::GetStateLocked() const {
             std::max(state.axes[trigger_axis],
                      std::clamp(static_cast<int>(controller.trigger * 255.0f), 0, 255));
     }
-    if (has_motion_sensors) {
+    if ((has_motion_sensors && vr.pad_motion_source != Vr::PadMotionSource::VrController) ||
+        vr.pad_motion_source == Vr::PadMotionSource::Gamepad) {
         return state;
     }
     const auto& motion = vr.controllers[1].active ? vr.controllers[1] : vr.controllers[0];
@@ -162,7 +163,9 @@ State GameController::ReadState() {
 
 std::optional<State> GameController::ReadMotionState() {
     std::lock_guard lock{m_state_mutex};
-    if (!has_motion_sensors || !m_state.connected ||
+    if ((receive_vr_input &&
+         Vr::GetDeviceState().pad_motion_source == Vr::PadMotionSource::VrController) ||
+        !has_motion_sensors || !m_state.connected ||
         !SDL_GamepadSensorEnabled(m_sdl_gamepad, SDL_SENSOR_GYRO)) {
         return std::nullopt;
     }

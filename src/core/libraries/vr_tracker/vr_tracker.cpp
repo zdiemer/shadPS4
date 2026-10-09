@@ -67,7 +67,9 @@ static std::optional<Input::State> GetPadMotionState() {
 
 static bool HasPadVrInput() {
     const auto& controllers = *Common::Singleton<Input::GameControllers>::Instance();
-    return Input::Vr::GetDeviceState().controller_mode != Input::Vr::ControllerMode::Move &&
+    const auto state = Input::Vr::GetDeviceState();
+    return state.controller_mode != Input::Vr::ControllerMode::Move &&
+           state.pad_motion_source != Input::Vr::PadMotionSource::Gamepad &&
            Pad::GetController(g_pad_handle) == controllers[0];
 }
 
