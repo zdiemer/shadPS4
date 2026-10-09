@@ -3,9 +3,11 @@
 
 #include "input/vr_state.h"
 
+#include <algorithm>
 #include <cmath>
 #include <deque>
 #include <mutex>
+#include <numbers>
 
 #include "common/logging/log.h"
 
@@ -15,6 +17,7 @@ namespace {
 
 std::mutex g_mutex;
 DeviceState g_state;
+std::optional<std::array<FieldOfView, 2>> g_render_field_of_view;
 std::optional<std::array<float, 3>> g_seated_pad_position;
 std::array<std::uint8_t, 2> g_controller_vibration{};
 std::deque<std::array<ControllerSample, 2>> g_controller_history;
@@ -59,6 +62,9 @@ DeviceState GetDeviceState() {
 
 void SetDeviceState(const DeviceState& state) {
     std::scoped_lock lock{g_mutex};
+    if (!state.connected) {
+        g_render_field_of_view.reset();
+    }
     UpdateSeatedPadPosition(state);
     auto updated_state = state;
     for (size_t hand = 0; hand < updated_state.controllers.size(); ++hand) {
@@ -104,6 +110,34 @@ void SetDeviceState(const DeviceState& state) {
         }
     }
     g_state = updated_state;
+}
+
+std::array<FieldOfView, 2> GetRenderFieldOfView() {
+    std::scoped_lock lock{g_mutex};
+    if (!g_render_field_of_view) {
+        float outer = std::atan(1.20743f);
+        float inner = std::atan(1.181346f);
+        float top = std::atan(1.262872f);
+        float bottom = top;
+        if (g_state.eyes_valid) {
+            const auto& left = g_state.field_of_view[0];
+            const auto& right = g_state.field_of_view[1];
+            outer = std::max({outer, -left.left, right.right});
+            inner = std::max({inner, left.right, -right.left});
+            top = std::max({top, left.up, right.up});
+            bottom = std::max({bottom, -left.down, -right.down});
+        }
+        constexpr float margin = std::numbers::pi_v<float> / 18.0f;
+        constexpr float limit = std::numbers::pi_v<float> * 4.0f / 9.0f;
+        outer = std::min(outer + margin, limit);
+        inner = std::min(inner + margin, limit);
+        top = std::min(top + margin, limit);
+        bottom = std::min(bottom + margin, limit);
+        g_render_field_of_view = {{{-outer, inner, top, -bottom}, {-inner, outer, top, -bottom}}};
+        LOG_INFO(Input, "VR render FOV tangents: {}, {}, {}, {} (host views: {})", std::tan(outer),
+                 std::tan(inner), std::tan(top), std::tan(bottom), g_state.eyes_valid);
+    }
+    return *g_render_field_of_view;
 }
 
 std::optional<std::array<float, 3>> GetSeatedPadPosition() {

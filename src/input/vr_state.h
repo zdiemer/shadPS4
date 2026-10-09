@@ -107,6 +107,7 @@ struct ControllerSample {
 
 DeviceState GetDeviceState();
 void SetDeviceState(const DeviceState& state);
+std::array<FieldOfView, 2> GetRenderFieldOfView();
 std::optional<std::array<float, 3>> GetSeatedPadPosition();
 bool RecenterSeatedPad();
 bool SetControllerVibration(std::size_t hand, std::uint8_t intensity);
