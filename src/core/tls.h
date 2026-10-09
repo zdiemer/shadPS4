@@ -49,8 +49,9 @@ Tcb* GetTcbBase();
 /// Makes sure TLS is initialized for the thread before entering guest.
 void InitializeTLS();
 
+extern thread_local void* g_fiber_hle_stack;
 void* PS4_SYSV_ABI GetHleStack();
-void PS4_SYSV_ABI RunOnHleStack(void* PS4_SYSV_ABI (*func)(void*), void* arg, void* stack);
+void* PS4_SYSV_ABI RunOnHleStack(void* PS4_SYSV_ABI (*func)(void*), void* arg, void* stack);
 
 template <auto f>
 struct HostCallWrapperImpl;

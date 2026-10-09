@@ -32,8 +32,10 @@ extern "C" void* PS4_SYSV_ABI _runOnAnotherStack(void* arg, void* func,
 
 namespace Core {
 
+thread_local void* g_fiber_hle_stack{};
+
 void* PS4_SYSV_ABI GetHleStack() {
-    if (!Libraries::Kernel::g_curthread) {
+    if (!g_fiber_hle_stack || !Libraries::Kernel::g_curthread) {
         return nullptr;
     }
     const auto* tcb = Libraries::Kernel::g_curthread->tcb;
@@ -45,13 +47,13 @@ void* PS4_SYSV_ABI GetHleStack() {
     const auto address = reinterpret_cast<uintptr_t>(&marker);
     const auto base = reinterpret_cast<uintptr_t>(fiber->addr_context);
     if (address >= base && address - base < fiber->size_context) {
-        return fiber->hle_stack;
+        return g_fiber_hle_stack;
     }
     return nullptr;
 }
 
-void PS4_SYSV_ABI RunOnHleStack(void* PS4_SYSV_ABI (*func)(void*), void* arg, void* stack) {
-    _runOnAnotherStack(arg, reinterpret_cast<void*>(func), stack);
+void* PS4_SYSV_ABI RunOnHleStack(void* PS4_SYSV_ABI (*func)(void*), void* arg, void* stack) {
+    return _runOnAnotherStack(arg, reinterpret_cast<void*>(func), stack);
 }
 
 #ifdef _WIN32

@@ -22,20 +22,27 @@ static constexpr u64 kFiberStackSignature = 0x7149f2ca7149f2ca;
 static constexpr u64 kFiberStackSizeCheck = 0xdeadbeefdeadbeef;
 
 static std::atomic<u32> context_size_check = false;
+static constexpr size_t HleStackSize = 128_KB;
 static std::mutex g_hle_stacks_mutex;
 static std::unordered_map<OrbisFiber*, std::unique_ptr<u8[]>> g_hle_stacks;
 
 void SetHleStack(OrbisFiber* fiber) {
-    constexpr size_t HleStackSize = 128_KB;
     std::scoped_lock lock{g_hle_stacks_mutex};
-    fiber->hle_stack = nullptr;
     g_hle_stacks.erase(fiber);
     if (fiber->addr_context && fiber->size_context < HleStackSize) {
         auto stack = std::make_unique<u8[]>(HleStackSize + 15);
-        fiber->hle_stack = reinterpret_cast<void*>(
-            (reinterpret_cast<uintptr_t>(stack.get()) + HleStackSize) & ~uintptr_t{15});
         g_hle_stacks.emplace(fiber, std::move(stack));
     }
+}
+
+void* GetHleStack(OrbisFiber* fiber) {
+    std::scoped_lock lock{g_hle_stacks_mutex};
+    const auto it = g_hle_stacks.find(fiber);
+    if (it == g_hle_stacks.end()) {
+        return nullptr;
+    }
+    return reinterpret_cast<void*>((reinterpret_cast<uintptr_t>(it->second.get()) + HleStackSize) &
+                                   ~uintptr_t{15});
 }
 
 OrbisFiberContext* GetFiberContext() {
@@ -131,8 +138,8 @@ void PS4_SYSV_ABI _sceFiberSwitchToFiber(OrbisFiber* fiber, u64 arg_on_run_to,
     __builtin_trap();
 }
 
-void PS4_SYSV_ABI _sceFiberSwitch(OrbisFiber* cur_fiber, OrbisFiber* fiber, u64 arg_on_run_to,
-                                  OrbisFiberContext* ctx) {
+[[gnu::noinline]] void PS4_SYSV_ABI SwitchWithHleStack(OrbisFiber* cur_fiber, OrbisFiber* fiber,
+                                                       u64 arg_on_run_to, OrbisFiberContext* ctx) {
     ctx->prev_fiber = cur_fiber;
     ctx->current_fiber = fiber;
 
@@ -159,6 +166,19 @@ void PS4_SYSV_ABI _sceFiberSwitch(OrbisFiber* cur_fiber, OrbisFiber* fiber, u64 
 
     _sceFiberSwitchToFiber(fiber, arg_on_run_to, ctx);
     __builtin_trap();
+}
+
+void PS4_SYSV_ABI _sceFiberSwitch(OrbisFiber* cur_fiber, OrbisFiber* fiber, u64 arg_on_run_to,
+                                  OrbisFiberContext* ctx) {
+    if (Core::g_fiber_hle_stack) {
+        Core::g_fiber_hle_stack = Core::RunOnHleStack(
+            [](void* arg)
+                PS4_SYSV_ABI -> void* { return GetHleStack(static_cast<OrbisFiber*>(arg)); },
+            fiber, Core::g_fiber_hle_stack);
+    } else {
+        Core::g_fiber_hle_stack = GetHleStack(fiber);
+    }
+    [[clang::musttail]] return SwitchWithHleStack(cur_fiber, fiber, arg_on_run_to, ctx);
 }
 
 void PS4_SYSV_ABI _sceFiberTerminate(OrbisFiber* fiber, u64 arg_on_return, OrbisFiberContext* ctx) {
@@ -277,7 +297,6 @@ s32 PS4_SYSV_ABI sceFiberFinalize(OrbisFiber* fiber) {
 
     std::scoped_lock lock{g_hle_stacks_mutex};
     g_hle_stacks.erase(fiber);
-    fiber->hle_stack = nullptr;
     return ORBIS_OK;
 }
 
@@ -313,6 +332,7 @@ s32 PS4_SYSV_ABI sceFiberRunImpl(OrbisFiber* fiber, void* addr_context, u64 size
 
     OrbisFiberContext ctx{};
     ctx.current_fiber = fiber;
+    Core::g_fiber_hle_stack = GetHleStack(fiber);
     ctx.prev_fiber = nullptr;
     ctx.return_val = 0;
 
@@ -354,6 +374,7 @@ s32 PS4_SYSV_ABI sceFiberRunImpl(OrbisFiber* fiber, void* addr_context, u64 size
     }
 
     tcb->tcb_fiber = nullptr;
+    Core::g_fiber_hle_stack = nullptr;
     return ORBIS_OK;
 }
 

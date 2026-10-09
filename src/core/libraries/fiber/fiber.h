@@ -70,7 +70,6 @@ struct OrbisFiber {
     void* context_start;
     void* context_end;
     u32 magic_end;
-    void* hle_stack;
 };
 static_assert(sizeof(OrbisFiber) <= 256);
 
