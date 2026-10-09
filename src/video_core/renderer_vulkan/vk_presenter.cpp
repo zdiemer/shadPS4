@@ -871,6 +871,39 @@ static void ReleaseVrLabels(const VideoCore::VrFrame& frame) {
     }
 }
 
+static std::array<Input::Vr::FieldOfView, 2> GetVrLayerFieldOfView(
+    const VideoCore::VrLayer& layer) {
+    auto fovs = Input::Vr::GetRenderFieldOfView();
+    const auto& transforms = layer.uv_transform;
+    const bool shared_image = layer.images[0].Address() == layer.images[1].Address();
+    const float horizontal = transforms[1][2] - transforms[0][2];
+    const float vertical = transforms[1][3] - transforms[0][3];
+    for (size_t eye = 0; eye < fovs.size(); ++eye) {
+        std::array<float, 2> low{0.0f, 0.0f}, high{1.0f, 1.0f};
+        if (shared_image && (horizontal != 0.0f || vertical != 0.0f)) {
+            const size_t axis = std::abs(horizontal) >= std::abs(vertical) ? 0 : 1;
+            const float split = (transforms[0][axis + 2] + transforms[1][axis + 2]) * 0.5f;
+            if (transforms[eye][axis + 2] < split) {
+                high[axis] = split;
+            } else {
+                low[axis] = split;
+            }
+        }
+        const auto& uv = transforms[eye];
+        if (uv[0] == 0.0f || uv[1] == 0.0f) {
+            continue;
+        }
+        const auto [left, right] =
+            std::minmax({(low[0] - uv[2]) / uv[0], (high[0] - uv[2]) / uv[0]});
+        const auto [down, up] = std::minmax({(uv[3] - low[1]) / uv[1], (uv[3] - high[1]) / uv[1]});
+        fovs[eye].left = std::max(fovs[eye].left, std::atan(left));
+        fovs[eye].right = std::min(fovs[eye].right, std::atan(right));
+        fovs[eye].down = std::max(fovs[eye].down, std::atan(down));
+        fovs[eye].up = std::min(fovs[eye].up, std::atan(up));
+    }
+    return fovs;
+}
+
 void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
     if (vr_frame_pending.exchange(true)) {
         if (frame.scene.release_label || (frame.overlay && frame.overlay->release_label)) {
@@ -898,8 +931,11 @@ void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
         const float outer = std::atan(1.20743f);
         const float inner = std::atan(1.181346f);
         const float vertical = std::atan(1.262872f);
-        const std::array<Input::Vr::FieldOfView, 2> fovs{
-            {{-outer, inner, vertical, -vertical}, {-inner, outer, vertical, -vertical}}};
+        const auto fovs =
+            frame.head_locked
+                ? std::array<Input::Vr::FieldOfView, 2>{{{-outer, inner, vertical, -vertical},
+                                                         {-inner, outer, vertical, -vertical}}}
+                : GetVrLayerFieldOfView(frame.scene);
         std::array<Input::Vr::Pose, 2> poses{frame.head_pose, frame.head_pose};
         const auto& q = frame.head_pose.orientation;
         for (u32 eye = 0; !frame.head_locked && eye < poses.size(); ++eye) {

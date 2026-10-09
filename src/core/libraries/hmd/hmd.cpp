@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cmath>
+
 #include "common/elf_info.h"
 #include "common/logging/log.h"
 #include "core/libraries/error_codes.h"
@@ -189,7 +191,9 @@ s32 PS4_SYSV_ABI sceHmdGetFieldOfView(s32 handle, OrbisHmdFieldOfView* field_of_
     if (!Input::Vr::GetDeviceState().connected) {
         return ORBIS_HMD_ERROR_HANDLE_INVALID;
     }
-    *field_of_view = {1.20743f, 1.181346f, 1.262872f, 1.262872f};
+    const auto fov = Input::Vr::GetRenderFieldOfView()[0];
+    *field_of_view = {std::tan(-fov.left), std::tan(fov.right), std::tan(fov.up),
+                      std::tan(-fov.down)};
     return ORBIS_OK;
 }
 
