@@ -131,7 +131,11 @@ s32 SubmitReprojection(const OrbisHmdReprojectionRenderParam* param,
     if (param == nullptr || pose == nullptr) {
         return ORBIS_HMD_ERROR_PARAMETER_NULL;
     }
-    if (flags != 0 || !presenter) {
+    auto* memory = Core::Memory::Instance();
+    if (flags != 0 || !presenter ||
+        !memory->IsValidMapping(reinterpret_cast<VAddr>(param), sizeof(*param)) ||
+        !memory->IsValidMapping(reinterpret_cast<VAddr>(pose), sizeof(*pose)) ||
+        (overlay && !memory->IsValidMapping(reinterpret_cast<VAddr>(overlay), sizeof(*overlay)))) {
         return ORBIS_HMD_ERROR_PARAMETER_INVALID;
     }
     VideoCore::VrFrame frame{};
@@ -147,7 +151,7 @@ s32 SubmitReprojection(const OrbisHmdReprojectionRenderParam* param,
         norm += value * value;
     }
     if (!std::isfinite(norm) || norm < 0.000001f) {
-        return ORBIS_OK;
+        return ORBIS_HMD_ERROR_PARAMETER_INVALID;
     }
     for (float& value : frame.head_pose.orientation) {
         value /= std::sqrt(norm);
@@ -156,14 +160,14 @@ s32 SubmitReprojection(const OrbisHmdReprojectionRenderParam* param,
         return result;
     }
     if (!HasFiniteTransforms(frame.scene)) {
-        return ORBIS_OK;
+        return ORBIS_HMD_ERROR_PARAMETER_INVALID;
     }
     if (overlay != nullptr) {
         if (const s32 result = ReadLayer(overlay, frame.overlay.emplace()); result != ORBIS_OK) {
             return result;
         }
         if (!HasFiniteTransforms(*frame.overlay)) {
-            return ORBIS_OK;
+            return ORBIS_HMD_ERROR_PARAMETER_INVALID;
         }
     }
     presenter->SubmitVrFrame(frame);
