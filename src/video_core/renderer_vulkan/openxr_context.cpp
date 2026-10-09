@@ -666,6 +666,12 @@ std::chrono::nanoseconds OpenXRContext::Update() {
                 .session_running = impl->session_running,
                 .mounted = impl->session_running && impl->user_present,
             });
+        } else if (event.type == XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED) {
+            const auto& changed =
+                *reinterpret_cast<const XrEventDataInteractionProfileChanged*>(&event);
+            if (changed.session == impl->session) {
+                impl->input->LogInteractionProfiles();
+            }
         } else if (event.type == XR_TYPE_EVENT_DATA_USER_PRESENCE_CHANGED_EXT &&
                    impl->user_presence_supported) {
             const auto& changed =

@@ -19,6 +19,7 @@ public:
     ~OpenXRInput();
     bool Initialize(bool frame_profile);
     bool Attach(XrSession session);
+    void LogInteractionProfiles();
     void Sync(bool focused, Input::Vr::DeviceState& state);
     void Locate(XrSpace local_space, XrTime time, Input::Vr::DeviceState& state);
 

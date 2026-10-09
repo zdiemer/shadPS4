@@ -173,6 +173,26 @@ bool OpenXRInput::Attach(XrSession session_) {
     return true;
 }
 
+void OpenXRInput::LogInteractionProfiles() {
+    std::scoped_lock lock{mutex};
+    for (size_t hand = 0; hand < hands.size(); ++hand) {
+        XrInteractionProfileState profile{XR_TYPE_INTERACTION_PROFILE_STATE};
+        if (XR_FAILED(xrGetCurrentInteractionProfile(session, hands[hand], &profile))) {
+            continue;
+        }
+        if (profile.interactionProfile == XR_NULL_PATH) {
+            LOG_INFO(Input, "OpenXR hand {} interaction profile: unbound", hand);
+            continue;
+        }
+        std::array<char, XR_MAX_PATH_LENGTH> name{};
+        std::uint32_t length{};
+        if (XR_SUCCEEDED(xrPathToString(instance, profile.interactionProfile, name.size(), &length,
+                                        name.data()))) {
+            LOG_INFO(Input, "OpenXR hand {} interaction profile: {}", hand, name.data());
+        }
+    }
+}
+
 void OpenXRInput::Sync(bool focused, Input::Vr::DeviceState& state) {
     std::scoped_lock lock{mutex};
     const auto previous = state.controllers;
