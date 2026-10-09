@@ -166,6 +166,7 @@ Instance::Instance(Frontend::WindowSDL& window, s32 physical_device_index,
         physical_device = physical_devices[physical_device_index];
     }
 
+    const auto configured_device = physical_device;
     if (openxr_context && openxr_context->IsAvailable()) {
         const VkPhysicalDevice xr_device = openxr_context->GetGraphicsDevice(*instance);
         if (xr_device != VK_NULL_HANDLE) {
@@ -186,20 +187,45 @@ Instance::Instance(Frontend::WindowSDL& window, s32 physical_device_index,
                 }
                 physical_device = xr_device;
             }
+        } else {
+            openxr_context->Disable();
         }
     }
 
-    available_extensions = GetSupportedExtensions(physical_device);
-    format_properties = GetFormatProperties(physical_device);
-    properties = physical_device.getProperties();
-    memory_properties = physical_device.getMemoryProperties();
-    CollectDeviceParameters();
-    ASSERT_MSG(properties.apiVersion >= TargetVulkanApiVersion,
-               "Vulkan {}.{} is required, but only {}.{} is supported by device!",
-               VK_VERSION_MAJOR(TargetVulkanApiVersion), VK_VERSION_MINOR(TargetVulkanApiVersion),
-               VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion));
+    const auto initialize_device = [&] {
+        available_extensions = GetSupportedExtensions(physical_device);
+        format_properties = GetFormatProperties(physical_device);
+        properties = physical_device.getProperties();
+        memory_properties = physical_device.getMemoryProperties();
+        CollectDeviceParameters();
+        ASSERT_MSG(
+            properties.apiVersion >= TargetVulkanApiVersion,
+            "Vulkan {}.{} is required, but only {}.{} is supported by device!",
+            VK_VERSION_MAJOR(TargetVulkanApiVersion), VK_VERSION_MINOR(TargetVulkanApiVersion),
+            VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion));
+        return CreateDevice();
+    };
 
-    CreateDevice();
+    bool device_created = initialize_device();
+    if (openxr_context && openxr_context->IsAvailable() &&
+        (!device_created ||
+         !openxr_context->CreateSession(*instance, physical_device, *device, queue_family_index))) {
+        openxr_context->Disable();
+        if (!device_created || physical_device != configured_device) {
+            if (profiler_context) {
+                TracyVkDestroy(profiler_context);
+                profiler_context = nullptr;
+            }
+            vmaDestroyAllocator(allocator);
+            allocator = nullptr;
+            device.reset();
+            physical_device = configured_device;
+            LOG_WARNING(Render_Vulkan, "OpenXR session setup failed; restoring configured GPU {}",
+                        physical_device.getProperties().deviceName.data());
+            device_created = initialize_device();
+        }
+    }
+    ASSERT_MSG(device_created, "Failed to create Vulkan device");
     CollectPhysicalMemoryInfo();
     CollectImageFormatInfo();
     CollectToolingInfo();
@@ -342,6 +368,7 @@ bool Instance::CreateDevice() {
     }
     amd_shader_explicit_vertex_parameter =
         add_extension(VK_AMD_SHADER_EXPLICIT_VERTEX_PARAMETER_EXTENSION_NAME);
+    fragment_shader_barycentric = false;
     if (!amd_shader_explicit_vertex_parameter) {
         fragment_shader_barycentric =
             add_extension(VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME);

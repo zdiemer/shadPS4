@@ -497,12 +497,9 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     ycbcr_pass.Create(device, instance.GetAllocator(), num_images);
     pp_pass.Create(device, swapchain.GetSurfaceFormat().format);
 
-    bool vr_session_created = false;
-    if (openxr->IsAvailable()) {
+    const bool vr_session_created = openxr->IsAvailable();
+    if (vr_session_created) {
         vr_copy_pass.Create(device);
-        vr_session_created =
-            openxr->CreateSession(instance.GetInstance(), instance.GetPhysicalDevice(), device,
-                                  instance.GetGraphicsQueueFamilyIndex());
     }
 
     ImGui::Layer::AddLayer(Common::Singleton<Core::Devtools::Layer>::Instance());
