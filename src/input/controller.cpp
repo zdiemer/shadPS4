@@ -62,16 +62,40 @@ void CalculateOrientation(const Libraries::Pad::OrbisFVector3& angular_velocity,
 GameController::GameController(bool receive_vr_input_)
     : receive_vr_input{receive_vr_input_}, m_states_queue(64) {}
 
-State GameController::GetStateLocked() const {
+State GameController::GetStateLocked() {
     State state = m_state;
     if (!receive_vr_input) {
         return state;
     }
     const auto vr = Vr::GetDeviceState();
     if (!vr.session_running || !vr.mounted || vr.controller_mode == Vr::ControllerMode::Move) {
+        vr_touch_down_timestamp = 0;
         return state;
     }
     using Vr::ControllerButton;
+    const auto& left = vr.controllers[0];
+    const auto& right = vr.controllers[1];
+    const bool touchpad_mode =
+        left.active && right.active &&
+        (left.buttons & (std::to_underlying(ControllerButton::Stick) |
+                         std::to_underlying(ControllerButton::FacePad))) != 0;
+    const int touch_index = !state.touchpad[0].state ? 0 : !state.touchpad[1].state ? 1 : -1;
+    if (touchpad_mode && touch_index >= 0) {
+        const u64 timestamp = Libraries::Kernel::sceKernelGetProcessTime();
+        if (vr_touch_down_timestamp == 0) {
+            vr_touch_id = m_next_touch_id;
+            m_next_touch_id = m_next_touch_id == 127 ? 1 : m_next_touch_id + 1;
+            vr_touch_down_timestamp = timestamp;
+        }
+        const float x = std::clamp((right.stick[0] + 1.0f) * 0.5f, 0.0f, 1919.0f / 1920.0f);
+        const float y = std::clamp((1.0f - right.stick[1]) * 0.5f, 0.0f, 940.0f / 941.0f);
+        state.OnTouchpad(touch_index, true, x, y);
+        state.touchpad[touch_index].ID = vr_touch_id;
+        state.touch_time_since_held_down =
+            std::max(state.touch_time_since_held_down, timestamp - vr_touch_down_timestamp);
+    } else {
+        vr_touch_down_timestamp = 0;
+    }
     constexpr std::array button_map{
         OrbisPadButtonDataOffset::Cross,   OrbisPadButtonDataOffset::Circle,
         OrbisPadButtonDataOffset::Square,  OrbisPadButtonDataOffset::Triangle,
@@ -97,7 +121,7 @@ State GameController::GetStateLocked() const {
         if (pressed(ControllerButton::Select)) {
             state.OnButton(OrbisPadButtonDataOffset::Cross, true);
         }
-        if (pressed(ControllerButton::FacePad) && hand == 1) {
+        if (!touchpad_mode && pressed(ControllerButton::FacePad) && hand == 1) {
             const auto& stick = controller.stick;
             const auto button = std::abs(stick[0]) > std::abs(stick[1])
                                     ? (stick[0] > 0.0f ? OrbisPadButtonDataOffset::Circle
@@ -110,9 +134,15 @@ State GameController::GetStateLocked() const {
             state.OnButton(hand == 0 ? OrbisPadButtonDataOffset::L1 : OrbisPadButtonDataOffset::R1,
                            true);
         }
-        if (pressed(ControllerButton::Stick) || (pressed(ControllerButton::FacePad) && hand == 0)) {
-            state.OnButton(hand == 0 ? OrbisPadButtonDataOffset::L3 : OrbisPadButtonDataOffset::R3,
-                           true);
+        if (pressed(ControllerButton::Stick) || pressed(ControllerButton::FacePad)) {
+            if (touchpad_mode) {
+                if (hand == 1) {
+                    state.OnButton(OrbisPadButtonDataOffset::TouchPad, true);
+                }
+            } else if (pressed(ControllerButton::Stick) || hand == 0) {
+                state.OnButton(
+                    hand == 0 ? OrbisPadButtonDataOffset::L3 : OrbisPadButtonDataOffset::R3, true);
+            }
         }
         if (controller.trigger > 0.5f) {
             state.OnButton(hand == 0 ? OrbisPadButtonDataOffset::L2 : OrbisPadButtonDataOffset::R2,
@@ -120,7 +150,7 @@ State GameController::GetStateLocked() const {
         }
         const size_t stick_axis = hand * 2;
         for (size_t axis = 0; axis < controller.stick.size(); ++axis) {
-            if (std::abs(controller.stick[axis]) > 0.1f) {
+            if (!touchpad_mode && std::abs(controller.stick[axis]) > 0.1f) {
                 const float value = controller.stick[axis] * (axis == 0 ? 1.0f : -1.0f);
                 state.axes[stick_axis + axis] =
                     std::clamp(static_cast<int>((value + 1.0f) * 127.5f), 0, 255);
@@ -319,6 +349,7 @@ void GameController::DisconnectController() {
     accel_buf[1] = 9.81f;
     m_next_touch_id = 1;
     m_touch_down_timestamp = 0;
+    vr_touch_down_timestamp = 0;
     m_state.connected = false;
     m_last_orientation_update = 0;
     PushStateLocked();

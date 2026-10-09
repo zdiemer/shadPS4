@@ -113,7 +113,7 @@ public:
     SDL_Gamepad* m_sdl_gamepad = nullptr;
 
 private:
-    State GetStateLocked() const;
+    State GetStateLocked();
     bool receive_vr_input{};
     bool has_motion_sensors{};
     std::optional<std::chrono::steady_clock::time_point> vr_recenter_started;
@@ -125,6 +125,8 @@ private:
 
     u8 m_next_touch_id{1};
     u64 m_touch_down_timestamp{};
+    u8 vr_touch_id{};
+    u64 vr_touch_down_timestamp{};
     u64 m_last_orientation_update{};
     Colour colour;
     std::optional<Colour> override_colour{};
