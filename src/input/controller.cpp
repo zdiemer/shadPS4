@@ -354,7 +354,7 @@ void GameController::ConnectController(SDL_Gamepad* pad) {
         pad && EmulatorSettings.IsMotionControlsEnabled() &&
         (SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO) || SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL));
     if (override_colour) {
-        SetLightBarRGB({});
+        ApplyLightBarLocked();
     }
     m_states_queue.Clear();
     if (!m_state.connected) {
@@ -416,16 +416,17 @@ void GameController::PushStateLocked(u64 timestamp) {
 }
 
 void GameController::SetLightBarRGB(u8 const r, u8 const g, u8 const b) {
-    if (override_colour.has_value()) {
-        if (m_sdl_gamepad) {
-            SDL_SetGamepadLED(m_sdl_gamepad, override_colour->r, override_colour->g,
-                              override_colour->b);
-        }
-        return;
+    std::lock_guard lock{m_state_mutex};
+    if (!override_colour) {
+        colour = {r, g, b};
     }
-    colour = {r, g, b};
-    if (m_sdl_gamepad != nullptr) {
-        SDL_SetGamepadLED(m_sdl_gamepad, r, g, b);
+    ApplyLightBarLocked();
+}
+
+void GameController::ApplyLightBarLocked() {
+    if (m_sdl_gamepad) {
+        const auto applied = override_colour.value_or(colour);
+        SDL_SetGamepadLED(m_sdl_gamepad, applied.r, applied.g, applied.b);
     }
 }
 
@@ -434,13 +435,22 @@ void GameController::SetLightBarRGB(Colour const c) {
 }
 
 Colour GameController::GetLightBarRGB() {
-    return colour;
+    std::lock_guard lock{m_state_mutex};
+    return override_colour.value_or(colour);
+}
+
+void GameController::SetLightBarOverride(std::optional<Colour> override) {
+    std::lock_guard lock{m_state_mutex};
+    override_colour = override;
+    if (override) {
+        colour = *override;
+    }
+    ApplyLightBarLocked();
 }
 
 void GameController::PollLightColour() {
-    if (m_sdl_gamepad != nullptr) {
-        SDL_SetGamepadLED(m_sdl_gamepad, colour.r, colour.g, colour.b);
-    }
+    std::lock_guard lock{m_state_mutex};
+    ApplyLightBarLocked();
 }
 
 void GameControllers::ResetLightbarColors() {
@@ -454,7 +464,7 @@ void GameControllers::ResetLightbarColors() {
             continue;
         }
         auto const& col = g_user_colours[i];
-        c->override_colour = std::nullopt;
+        c->SetLightBarOverride(std::nullopt);
         c->SetLightBarRGB(col);
     }
 }

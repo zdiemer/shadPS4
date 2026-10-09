@@ -106,6 +106,7 @@ public:
     void SetLightBarRGB(u8 const r, u8 const g, u8 const b);
     void SetLightBarRGB(Colour const c);
     Colour GetLightBarRGB();
+    void SetLightBarOverride(std::optional<Colour> colour);
     void PollLightColour();
     bool SetVibration(u8 smallMotor, u8 largeMotor);
     void SetTouchpadState(int touchIndex, bool touchDown, float x, float y);
@@ -116,6 +117,7 @@ public:
 
 private:
     State GetStateLocked();
+    void ApplyLightBarLocked();
     bool receive_vr_input{};
     std::optional<s32> vr_input_user;
     bool vr_input_active{};
@@ -133,7 +135,7 @@ private:
     u8 vr_touch_id{};
     u64 vr_touch_down_timestamp{};
     u64 m_last_orientation_update{};
-    Colour colour;
+    Colour colour{};
     std::optional<Colour> override_colour{};
 
     State m_state;
@@ -162,11 +164,7 @@ public:
     static std::optional<u8> GetControllerIndexFromControllerID(s32 controller_id);
 
     void SetControllerCustomColor(s32 i, u8 r, u8 g, u8 b) {
-        // reset to ensure the next function always runs, even if there already was a preexisting
-        // override colour before
-        controllers[i]->override_colour = std::nullopt;
-        controllers[i]->SetLightBarRGB(r, g, b);
-        controllers[i]->override_colour = {r, g, b};
+        controllers[i]->SetLightBarOverride(Colour{r, g, b});
     }
     void ResetLightbarColors();
 };
