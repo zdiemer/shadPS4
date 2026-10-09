@@ -124,10 +124,10 @@ s32 PS4_SYSV_ABI sceHmdGet2DEyeOffset(s32 handle, OrbisHmdEyeOffset* left_offset
     }
 
     // Return default values
-    left_offset->offset_x = -0.0315;
+    left_offset->offset_x = -Input::Vr::PsvrEyeOffset;
     left_offset->offset_y = 0;
     left_offset->offset_z = 0;
-    right_offset->offset_x = 0.0315;
+    right_offset->offset_x = Input::Vr::PsvrEyeOffset;
     right_offset->offset_y = 0;
     right_offset->offset_z = 0;
 

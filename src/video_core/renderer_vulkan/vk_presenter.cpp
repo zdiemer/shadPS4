@@ -928,9 +928,9 @@ void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
         if (!openxr->IsSessionRunning()) {
             return;
         }
-        const float outer = std::atan(1.20743f);
-        const float inner = std::atan(1.181346f);
-        const float vertical = std::atan(1.262872f);
+        const float outer = std::atan(Input::Vr::PsvrTanOuter);
+        const float inner = std::atan(Input::Vr::PsvrTanInner);
+        const float vertical = std::atan(Input::Vr::PsvrTanVertical);
         const auto fovs =
             frame.head_locked
                 ? std::array<Input::Vr::FieldOfView, 2>{{{-outer, inner, vertical, -vertical},
@@ -939,7 +939,7 @@ void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
         std::array<Input::Vr::Pose, 2> poses{frame.head_pose, frame.head_pose};
         const auto& q = frame.head_pose.orientation;
         for (u32 eye = 0; !frame.head_locked && eye < poses.size(); ++eye) {
-            const float offset = eye == 0 ? -0.0315f : 0.0315f;
+            const float offset = eye == 0 ? -Input::Vr::PsvrEyeOffset : Input::Vr::PsvrEyeOffset;
             poses[eye].position[0] += offset * (1 - 2 * (q[1] * q[1] + q[2] * q[2]));
             poses[eye].position[1] += offset * (2 * (q[0] * q[1] + q[3] * q[2]));
             poses[eye].position[2] += offset * (2 * (q[0] * q[2] - q[3] * q[1]));

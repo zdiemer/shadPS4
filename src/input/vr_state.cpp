@@ -135,9 +135,9 @@ void SetDeviceState(const DeviceState& state) {
 std::array<FieldOfView, 2> GetRenderFieldOfView() {
     std::scoped_lock lock{g_mutex};
     if (!g_render_field_of_view) {
-        float outer = std::atan(1.20743f);
-        float inner = std::atan(1.181346f);
-        float top = std::atan(1.262872f);
+        float outer = std::atan(PsvrTanOuter);
+        float inner = std::atan(PsvrTanInner);
+        float top = std::atan(PsvrTanVertical);
         float bottom = top;
         if (g_state.eyes_valid) {
             const auto& left = g_state.field_of_view[0];

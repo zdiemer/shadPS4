@@ -13,6 +13,12 @@
 
 namespace Input::Vr {
 
+// These values are a hardcoded return when a headset is connected.
+constexpr float PsvrTanOuter = 1.20743f;
+constexpr float PsvrTanInner = 1.181346f;
+constexpr float PsvrTanVertical = 1.262872f;
+constexpr float PsvrEyeOffset = 0.0315f;
+
 struct Pose {
     std::array<float, 3> position{};
     std::array<float, 4> orientation{0.0f, 0.0f, 0.0f, 1.0f};
