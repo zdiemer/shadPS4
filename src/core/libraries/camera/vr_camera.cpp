@@ -10,10 +10,13 @@
 #include <utility>
 #include <vector>
 
+#include "common/logging/log.h"
+#include "common/path_util.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/camera/camera_helpers.h"
 #include "core/libraries/camera/vr_camera.h"
 #include "core/libraries/kernel/time.h"
+#include "input/optical_tracker.h"
 #include "input/psvr_camera.h"
 #include "input/vr_state.h"
 
@@ -30,6 +33,7 @@ std::array<u32, 2> g_auto_white_balance{};
 std::array<OrbisCameraWhiteBalance, 2> g_white_balance{};
 std::array<OrbisCameraExposureGain, 2> g_exposure{};
 Input::PsvrCamera g_physical_camera;
+Input::OpticalTracker g_optical_tracker;
 bool g_physical_started{};
 u64 g_physical_sequence{};
 u64 g_physical_timestamp{};
@@ -42,7 +46,7 @@ std::optional<SDL_CameraID> GetPhysicalCamera() {
     int count{};
     auto* devices = SDL_GetCameras(&count);
     std::optional<SDL_CameraID> result;
-    if (index < count && Input::PsvrCamera::IsDevice(devices[index])) {
+    if (devices && index < count && Input::PsvrCamera::IsDevice(devices[index])) {
         result = devices[index];
     }
     SDL_free(devices);
@@ -117,8 +121,8 @@ std::pair<u32, u32> GetDimensions(const OrbisCameraConfigExtention& config) {
 } // namespace
 
 bool IsVrCameraAvailable() {
-    return Input::Vr::GetDeviceState().connected &&
-           (EmulatorSettings.GetCameraId() == -1 || GetPhysicalCamera().has_value());
+    return EmulatorSettings.GetCameraId() == -1 ? Input::Vr::GetDeviceState().connected
+                                                : GetPhysicalCamera().has_value();
 }
 
 bool IsVrCameraActive() {
@@ -277,6 +281,12 @@ s32 StartVrCamera(const OrbisCameraStartParameter& param) {
         g_physical_started = true;
         g_physical_sequence = 0;
         g_physical_timestamp = 0;
+        if (EmulatorSettings.GetVrPadPositionMode() == "camera" &&
+            !g_optical_tracker.LoadCalibration(
+                Common::FS::GetUserPath(Common::FS::PathType::UserDir) /
+                "psvr_camera_calibration.json")) {
+            LOG_ERROR(Lib_Camera, "PSVR optical tracking needs a valid camera calibration");
+        }
     }
     g_levels = {param.formatLevel[0], param.formatLevel[1]};
     g_started = true;
@@ -391,6 +401,15 @@ void GetVrCameraCalibration(const OrbisCameraGetCalibrationDataParameter& param,
             }
         }
     }
+}
+
+std::optional<std::array<float, 3>> GetPhysicalPadPosition(const std::array<u8, 3>& colour) {
+    std::scoped_lock lock{g_vr_camera_mutex};
+    if (!g_physical_started || !g_started) {
+        return std::nullopt;
+    }
+    const auto frame = g_physical_camera.ReadFrame();
+    return frame ? g_optical_tracker.Locate(*frame, colour) : std::nullopt;
 }
 
 } // namespace Libraries::Camera

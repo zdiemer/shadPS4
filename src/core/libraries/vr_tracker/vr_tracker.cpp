@@ -9,6 +9,7 @@
 
 #include "common/logging/log.h"
 #include "common/singleton.h"
+#include "core/emulator_settings.h"
 #include "core/libraries/camera/vr_camera.h"
 #include "core/libraries/error_codes.h"
 #include "core/libraries/kernel/time.h"
@@ -70,6 +71,19 @@ static std::optional<Input::State> GetPadMotionState() {
     return controller ? controller->ReadMotionState() : std::nullopt;
 }
 
+static std::optional<std::array<float, 3>> GetPadPosition() {
+    if (EmulatorSettings.GetVrPadPositionMode() != "camera") {
+        return Input::Vr::GetSeatedPadPosition();
+    }
+    auto* controller = Pad::GetController(g_pad_handle);
+    if (!controller) {
+        return std::nullopt;
+    }
+    const auto colour = controller->GetLightBarRGB();
+    const auto position = Camera::GetPhysicalPadPosition({colour.r, colour.g, colour.b});
+    return position ? Input::Vr::GetCameraPadPosition(*position) : std::nullopt;
+}
+
 static bool HasPadVrInput() {
     const auto& controllers = *Common::Singleton<Input::GameControllers>::Instance();
     const auto state = Input::Vr::GetDeviceState();
@@ -103,7 +117,7 @@ static void AdvanceCalibration() {
         case ORBIS_VR_TRACKER_DEVICE_DUALSHOCK4:
             ready &= g_camera_permit == ORBIS_VR_TRACKER_DEVICE_PERMIT_ALL &&
                      (GetPadMotionState()
-                          ? Input::Vr::GetSeatedPadPosition().has_value()
+                          ? GetPadPosition().has_value()
                           : HasPadVrInput() &&
                                 controller_ready(state.controllers[1].active ? 1 : 0, calibration));
             break;
@@ -511,7 +525,7 @@ s32 PS4_SYSV_ABI sceVrTrackerGetResult(const OrbisVrTrackerGetResultParam* param
                 result->orientation_quality = ORBIS_VR_TRACKER_QUALITY_PARTIAL;
                 const auto& q = motion->orientation;
                 Input::Vr::Pose pose{.orientation = {q.x, q.y, q.z, q.w}};
-                if (const auto position = Input::Vr::GetSeatedPadPosition()) {
+                if (const auto position = GetPadPosition()) {
                     pose.position = *position;
                     result->position_quality = ORBIS_VR_TRACKER_QUALITY_PARTIAL;
                 }

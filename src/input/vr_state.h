@@ -118,6 +118,7 @@ void SetActiveUser(std::int32_t user);
 void ResetTrackingOrigin();
 std::array<FieldOfView, 2> GetRenderFieldOfView();
 std::optional<std::array<float, 3>> GetSeatedPadPosition();
+std::optional<std::array<float, 3>> GetCameraPadPosition(const std::array<float, 3>& position);
 bool RecenterSeatedPad();
 bool SetControllerVibration(std::size_t hand, std::uint8_t intensity);
 std::array<std::uint8_t, 2> GetControllerVibration();

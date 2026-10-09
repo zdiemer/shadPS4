@@ -21,6 +21,8 @@ DeviceState g_state;
 std::atomic<std::int32_t> g_active_user{-1};
 std::optional<std::array<FieldOfView, 2>> g_render_field_of_view;
 std::optional<std::array<float, 3>> g_seated_pad_position;
+std::optional<std::array<float, 3>> g_camera_pad_origin;
+std::array<float, 3> g_camera_pad_forward{};
 std::array<std::uint8_t, 2> g_controller_vibration{};
 std::deque<std::array<ControllerSample, 2>> g_controller_history;
 std::uint64_t g_controller_sequence{};
@@ -30,6 +32,7 @@ TrackingProvider g_provider;
 void UpdateSeatedPadPosition(const DeviceState& state) {
     if (!state.session_running || !state.seated_pad) {
         g_seated_pad_position.reset();
+        g_camera_pad_origin.reset();
         return;
     }
     if (g_seated_pad_position || !state.mounted || !state.position_valid ||
@@ -77,6 +80,7 @@ void SetActiveUser(std::int32_t user) {
 void ResetTrackingOrigin() {
     std::scoped_lock lock{g_mutex};
     g_seated_pad_position.reset();
+    g_camera_pad_origin.reset();
     g_controller_history.clear();
 }
 
@@ -165,6 +169,35 @@ std::optional<std::array<float, 3>> GetSeatedPadPosition() {
     return g_seated_pad_position;
 }
 
+std::optional<std::array<float, 3>> GetCameraPadPosition(const std::array<float, 3>& position) {
+    std::scoped_lock lock{g_mutex};
+    if (!g_seated_pad_position || !g_state.mounted || !g_state.orientation_valid ||
+        !std::ranges::all_of(position, [](float value) { return std::isfinite(value); })) {
+        return std::nullopt;
+    }
+    if (!g_camera_pad_origin) {
+        const auto& q = g_state.head_pose.orientation;
+        auto forward = RotateToLocal({-q[0], -q[1], -q[2], q[3]}, {0.0f, 0.0f, -1.0f});
+        const float length = std::hypot(forward[0], forward[2]);
+        if (!std::isfinite(length) || length < 0.001f) {
+            return std::nullopt;
+        }
+        forward[0] /= length;
+        forward[2] /= length;
+        g_camera_pad_forward = forward;
+        g_camera_pad_origin = position;
+    }
+    const auto& forward = g_camera_pad_forward;
+    const float dx = position[0] - g_camera_pad_origin->at(0);
+    const float dy = position[1] - g_camera_pad_origin->at(1);
+    const float dz = position[2] - g_camera_pad_origin->at(2);
+    auto result = *g_seated_pad_position;
+    result[0] += forward[2] * dx - forward[0] * dz;
+    result[1] -= dy;
+    result[2] -= forward[0] * dx + forward[2] * dz;
+    return result;
+}
+
 bool RecenterSeatedPad() {
     std::scoped_lock lock{g_mutex};
     if (!g_state.session_running || !g_state.seated_pad ||
@@ -173,6 +206,7 @@ bool RecenterSeatedPad() {
         return false;
     }
     g_seated_pad_position.reset();
+    g_camera_pad_origin.reset();
     UpdateSeatedPadPosition(g_state);
     return true;
 }

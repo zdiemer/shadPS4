@@ -3,6 +3,9 @@
 
 #pragma once
 
+#include <array>
+#include <optional>
+
 #include "core/libraries/camera/camera.h"
 
 namespace Libraries::Camera {
@@ -35,6 +38,7 @@ OrbisCameraWhiteBalance GetVrCameraWhiteBalance(OrbisCameraChannel channel);
 s32 StartVrCamera(const OrbisCameraStartParameter& param);
 s32 StopVrCamera();
 s32 ReadVrCamera(OrbisCameraFrameData* frame_data);
+std::optional<std::array<float, 3>> GetPhysicalPadPosition(const std::array<u8, 3>& colour);
 void GetVrCameraCalibration(const OrbisCameraGetCalibrationDataParameter& param,
                             OrbisCameraCalibrationData* data);
 

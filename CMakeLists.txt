@@ -1278,6 +1278,8 @@ set(IMGUI src/imgui/imgui_config.h
 
 set(INPUT src/input/controller.cpp
           src/input/controller.h
+          src/input/optical_tracker.cpp
+          src/input/optical_tracker.h
           src/input/psvr_camera.cpp
           src/input/psvr_camera.h
           src/input/vr_state.cpp

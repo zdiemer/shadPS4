@@ -521,7 +521,8 @@ void EmulatorSettingsImpl::ApplyVrEnvironmentOverrides() {
     };
     apply_mode("SHADPS4_VR_INPUT", m_vulkan.vr_controller_mode, {"both", "pad", "move"});
     apply_mode("SHADPS4_VR_PAD_MOTION", m_vulkan.vr_pad_motion_source, {"auto", "gamepad", "vr"});
-    apply_mode("SHADPS4_VR_PAD_POSITION", m_vulkan.vr_pad_position_mode, {"none", "seated"});
+    apply_mode("SHADPS4_VR_PAD_POSITION", m_vulkan.vr_pad_position_mode,
+               {"none", "seated", "camera"});
     if (const char* value = std::getenv("SHADPS4_VR_CAMERA_DISTANCE")) {
         char* end{};
         const float distance = std::strtof(value, &end);

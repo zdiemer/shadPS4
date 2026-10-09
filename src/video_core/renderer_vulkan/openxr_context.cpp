@@ -238,7 +238,7 @@ bool OpenXRContext::Impl::InitializeInstance() {
              static_cast<u32>(context->pad_motion_source));
     {
         const auto position = EmulatorSettings.GetVrPadPositionMode();
-        context->seated_pad = position == "seated";
+        context->seated_pad = position == "seated" || position == "camera";
         if (!context->seated_pad && position != "none") {
             LOG_WARNING(Render_Vulkan, "Unknown OpenXR Pad position mode: {}", position);
         }
