@@ -169,7 +169,23 @@ Instance::Instance(Frontend::WindowSDL& window, s32 physical_device_index,
     if (openxr_context && openxr_context->IsAvailable()) {
         const VkPhysicalDevice xr_device = openxr_context->GetGraphicsDevice(*instance);
         if (xr_device != VK_NULL_HANDLE) {
-            physical_device = xr_device;
+            const auto xr_extensions = GetSupportedExtensions(vk::PhysicalDevice{xr_device});
+            const bool supported = std::ranges::all_of(
+                openxr_context->GetDeviceExtensions(), [&](const std::string& extension) {
+                    return std::ranges::find(xr_extensions, extension) != xr_extensions.end();
+                });
+            if (!supported) {
+                LOG_WARNING(Render_Vulkan,
+                            "OpenXR Vulkan device extensions unavailable; using configured GPU");
+                openxr_context->Disable();
+            } else {
+                if (physical_device != vk::PhysicalDevice{xr_device}) {
+                    LOG_INFO(Render_Vulkan, "OpenXR requires GPU {}; overriding configured GPU {}",
+                             vk::PhysicalDevice{xr_device}.getProperties().deviceName.data(),
+                             physical_device.getProperties().deviceName.data());
+                }
+                physical_device = xr_device;
+            }
         }
     }
 

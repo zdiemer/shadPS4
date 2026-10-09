@@ -25,6 +25,7 @@ public:
     OpenXRContext& operator=(const OpenXRContext&) = delete;
 
     bool IsAvailable() const;
+    void Disable();
     bool IsSessionRunning() const;
     std::span<const std::string> GetInstanceExtensions() const;
     std::span<const std::string> GetDeviceExtensions() const;

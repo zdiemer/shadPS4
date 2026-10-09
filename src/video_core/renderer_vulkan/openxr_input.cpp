@@ -36,7 +36,12 @@ OpenXRInput::~OpenXRInput() {
 
 XrPath OpenXRInput::Path(const char* name) const {
     XrPath path{XR_NULL_PATH};
-    xrStringToPath(instance, name, &path);
+    const auto result = xrStringToPath(instance, name, &path);
+    if (XR_FAILED(result)) {
+        LOG_WARNING(Render_Vulkan, "Failed to resolve OpenXR path {}: {}", name,
+                    static_cast<int>(result));
+        return XR_NULL_PATH;
+    }
     return path;
 }
 
@@ -48,12 +53,20 @@ XrAction OpenXRInput::CreateAction(const char* name, XrActionType type) {
     info.countSubactionPaths = hands.size();
     info.subactionPaths = hands.data();
     XrAction action{XR_NULL_HANDLE};
-    xrCreateAction(action_set, &info, &action);
+    const auto result = xrCreateAction(action_set, &info, &action);
+    if (XR_FAILED(result)) {
+        LOG_WARNING(Render_Vulkan, "Failed to create OpenXR action {}: {}", name,
+                    static_cast<int>(result));
+        return XR_NULL_HANDLE;
+    }
     return action;
 }
 
 bool OpenXRInput::Initialize(bool frame_profile) {
     hands = {Path("/user/hand/left"), Path("/user/hand/right")};
+    if (hands[0] == XR_NULL_PATH || hands[1] == XR_NULL_PATH) {
+        return false;
+    }
     XrActionSetCreateInfo info{XR_TYPE_ACTION_SET_CREATE_INFO};
     std::strncpy(info.actionSetName, "psvr_controls", XR_MAX_ACTION_SET_NAME_SIZE - 1);
     std::strncpy(info.localizedActionSetName, "PSVR Controls",
