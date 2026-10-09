@@ -151,11 +151,15 @@ s32 SubmitReprojection(const OrbisHmdReprojectionRenderParam* param,
     for (float value : frame.head_pose.orientation) {
         norm += value * value;
     }
-    if (!std::isfinite(norm) || norm < 0.000001f) {
+    const bool empty_pose =
+        std::ranges::all_of(frame.head_pose.orientation, [](float value) { return value == 0.0f; });
+    if (!std::isfinite(norm) || (!empty_pose && norm < 0.000001f)) {
         return ORBIS_HMD_ERROR_PARAMETER_INVALID;
     }
-    for (float& value : frame.head_pose.orientation) {
-        value /= std::sqrt(norm);
+    if (!empty_pose) {
+        for (float& value : frame.head_pose.orientation) {
+            value /= std::sqrt(norm);
+        }
     }
     if (const s32 result = ReadLayer(param, frame.scene); result != ORBIS_OK) {
         return result;
@@ -234,11 +238,15 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStartMultilayer(const OrbisHmdReprojectionLay
     for (float value : frame.head_pose.orientation) {
         norm += value * value;
     }
-    if (!std::isfinite(norm) || norm < 0.000001f) {
+    const bool empty_pose =
+        std::ranges::all_of(frame.head_pose.orientation, [](float value) { return value == 0.0f; });
+    if (!std::isfinite(norm) || (!empty_pose && norm < 0.000001f)) {
         return ORBIS_HMD_ERROR_PARAMETER_INVALID;
     }
-    for (float& value : frame.head_pose.orientation) {
-        value /= std::sqrt(norm);
+    if (!empty_pose) {
+        for (float& value : frame.head_pose.orientation) {
+            value /= std::sqrt(norm);
+        }
     }
     if (count == 2) {
         frame.overlay.emplace();

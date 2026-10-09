@@ -902,7 +902,9 @@ static std::array<Input::Vr::FieldOfView, 2> GetVrLayerFieldOfView(
 }
 
 void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
-    if (vr_frame_pending.exchange(true)) {
+    const bool empty_pose =
+        std::ranges::all_of(frame.head_pose.orientation, [](float value) { return value == 0.0f; });
+    if (empty_pose || vr_frame_pending.exchange(true)) {
         if (frame.scene.release_label || (frame.overlay && frame.overlay->release_label)) {
             liverpool->SubmitGfxCallback([this, frame] {
                 draw_scheduler.Finish();
