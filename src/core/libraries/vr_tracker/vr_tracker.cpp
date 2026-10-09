@@ -545,6 +545,12 @@ s32 PS4_SYSV_ABI sceVrTrackerGetResult(const OrbisVrTrackerGetResultParam* param
                 result->angular_velocity_x = velocity[0];
                 result->angular_velocity_y = velocity[1];
                 result->angular_velocity_z = velocity[2];
+                LOG_DEBUG(Lib_VrTracker,
+                          "Pad handle {}, status {}, quality {}/{}, position {}/{}/{}",
+                          param->handle, static_cast<u32>(result->status),
+                          static_cast<u32>(result->position_quality),
+                          static_cast<u32>(result->orientation_quality), pose.position[0],
+                          pose.position[1], pose.position[2]);
                 return ORBIS_OK;
             }
         }

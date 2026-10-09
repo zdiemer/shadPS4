@@ -409,7 +409,14 @@ std::optional<std::array<float, 3>> GetPhysicalPadPosition(const std::array<u8, 
         return std::nullopt;
     }
     const auto frame = g_physical_camera.ReadFrame();
-    return frame ? g_optical_tracker.Locate(*frame, colour) : std::nullopt;
+    if (!frame) {
+        LOG_DEBUG(Lib_Camera, "Optical Pad has no current camera frame");
+        return std::nullopt;
+    }
+    const auto position = g_optical_tracker.Locate(*frame, colour);
+    LOG_DEBUG(Lib_Camera, "Optical Pad frame {}, colour {}/{}/{}, detected {}", frame->sequence,
+              colour[0], colour[1], colour[2], position.has_value());
+    return position;
 }
 
 } // namespace Libraries::Camera

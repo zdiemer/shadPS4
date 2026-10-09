@@ -36,6 +36,18 @@ struct Blob {
     size_t area{};
 };
 
+Vector ReadColour(const std::vector<u8>& image, size_t pixel) {
+    const auto pair = (pixel & ~size_t{1}) * 2;
+    const int y = image[pixel * 2] - 16;
+    const int u = image[pair + 1] - 128;
+    const int v = image[pair + 3] - 128;
+    return {
+        static_cast<double>(std::clamp((298 * y + 409 * v + 128) >> 8, 0, 255)),
+        static_cast<double>(std::clamp((298 * y - 100 * u - 208 * v + 128) >> 8, 0, 255)),
+        static_cast<double>(std::clamp((298 * y + 516 * u + 128) >> 8, 0, 255)),
+    };
+}
+
 std::vector<Blob> FindBlobs(const std::vector<u8>& image, int width, int height,
                             const std::array<u8, 3>& colour) {
     const auto target_min = std::ranges::min(colour);
@@ -49,46 +61,53 @@ std::vector<Blob> FindBlobs(const std::vector<u8>& image, int width, int height,
     }
     std::vector<u8> mask(static_cast<size_t>(width) * height);
     for (size_t pixel = 0; pixel < mask.size(); ++pixel) {
-        const auto pair = (pixel & ~size_t{1}) * 2;
-        const int y = image[pixel * 2] - 16;
-        if (y < 8) {
+        if (image[pixel * 2] < 24) {
             continue;
         }
-        const int u = image[pair + 1] - 128;
-        const int v = image[pair + 3] - 128;
-        Vector rgb{
-            static_cast<double>(std::clamp((298 * y + 409 * v + 128) >> 8, 0, 255)),
-            static_cast<double>(std::clamp((298 * y - 100 * u - 208 * v + 128) >> 8, 0, 255)),
-            static_cast<double>(std::clamp((298 * y + 516 * u + 128) >> 8, 0, 255)),
-        };
+        auto rgb = ReadColour(image, pixel);
         const auto [minimum, maximum] = std::ranges::minmax(rgb);
-        if (maximum < 48 || maximum - minimum < 32) {
+        constexpr double MinimumLightBrightness = 120;
+        if (maximum < MinimumLightBrightness) {
+            continue;
+        }
+        mask[pixel] = 1;
+        if (maximum - minimum < 32) {
             continue;
         }
         for (auto& value : rgb) {
             value -= minimum;
         }
         const double similarity = Dot(rgb, target);
-        mask[pixel] = similarity > 0 && similarity * similarity > 0.9 * Dot(rgb, rgb) * target_norm;
+        if (similarity > 0 && similarity * similarity > 0.9 * Dot(rgb, rgb) * target_norm) {
+            mask[pixel] = 2;
+        }
     }
     std::vector<Blob> blobs;
     std::vector<size_t> pending;
     for (size_t pixel = 0; pixel < mask.size(); ++pixel) {
-        if (!mask[pixel]) {
+        if (mask[pixel] != 2) {
             continue;
         }
         pending.clear();
         pending.push_back(pixel);
         mask[pixel] = 0;
+        size_t colour_pixels = 1;
         double sum_x{}, sum_y{};
+        Vector total_colour{};
         for (size_t next = 0; next < pending.size(); ++next) {
             const auto location = pending[next];
             const auto x = location % width;
             const auto y = location / width;
             sum_x += x;
             sum_y += y;
+            const auto rgb = ReadColour(image, location);
+            const auto minimum = std::ranges::min(rgb);
+            for (size_t axis = 0; axis < total_colour.size(); ++axis) {
+                total_colour[axis] += rgb[axis] - minimum;
+            }
             const auto visit = [&](size_t neighbour) {
                 if (mask[neighbour]) {
+                    colour_pixels += mask[neighbour] == 2;
                     mask[neighbour] = 0;
                     pending.push_back(neighbour);
                 }
@@ -106,7 +125,9 @@ std::vector<Blob> FindBlobs(const std::vector<u8>& image, int width, int height,
                 visit(location + width);
             }
         }
-        if (pending.size() >= 4 && pending.size() < mask.size() / 50) {
+        const double similarity = Dot(total_colour, target);
+        if (colour_pixels >= 4 && pending.size() < mask.size() / 50 && similarity > 0 &&
+            similarity * similarity > 0.85 * Dot(total_colour, total_colour) * target_norm) {
             blobs.push_back({sum_x / pending.size(), sum_y / pending.size(), pending.size()});
         }
     }
