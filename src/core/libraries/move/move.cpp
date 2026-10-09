@@ -108,9 +108,15 @@ static OrbisMoveData ConvertSample(const Input::Vr::ControllerSample& sample) {
         data.button_data = {.button_data = std::to_underlying(OrbisMoveButton::Intercepted)};
     }
     if (state.orientation_valid) {
-        const auto gravity =
-            Input::Vr::RotateToLocal(state.grip_pose.orientation, {0.0f, 1.0f, 0.0f});
-        std::copy(gravity.begin(), gravity.end(), data.accelerometer);
+        std::array<float, 3> acceleration{0.0f, 1.0f, 0.0f};
+        if (state.linear_acceleration_valid) {
+            for (size_t axis = 0; axis < acceleration.size(); ++axis) {
+                acceleration[axis] += state.linear_acceleration[axis] / 9.81f;
+            }
+        }
+        const auto local_acceleration =
+            Input::Vr::RotateToLocal(state.grip_pose.orientation, acceleration);
+        std::copy(local_acceleration.begin(), local_acceleration.end(), data.accelerometer);
         if (state.angular_velocity_valid) {
             const auto gyro =
                 Input::Vr::RotateToLocal(state.grip_pose.orientation, state.angular_velocity);

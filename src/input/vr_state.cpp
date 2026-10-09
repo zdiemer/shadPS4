@@ -3,6 +3,7 @@
 
 #include "input/vr_state.h"
 
+#include <cmath>
 #include <deque>
 #include <mutex>
 
@@ -27,6 +28,29 @@ DeviceState GetDeviceState() {
 
 void SetDeviceState(const DeviceState& state) {
     std::scoped_lock lock{g_mutex};
+    auto updated_state = state;
+    for (size_t hand = 0; hand < updated_state.controllers.size(); ++hand) {
+        auto& controller = updated_state.controllers[hand];
+        controller.linear_acceleration = {};
+        controller.linear_acceleration_valid = false;
+        const auto& previous = g_state.controllers[hand];
+        if (!state.session_running || !g_state.session_running || !state.mounted ||
+            !g_state.mounted || !controller.active || !previous.active ||
+            !controller.position_tracked || !previous.position_tracked ||
+            !controller.linear_velocity_valid || !previous.linear_velocity_valid ||
+            state.sample_time <= g_state.sample_time) {
+            continue;
+        }
+        const float interval =
+            std::chrono::duration<float>(state.sample_time - g_state.sample_time).count();
+        bool valid = true;
+        for (size_t axis = 0; axis < controller.linear_acceleration.size(); ++axis) {
+            controller.linear_acceleration[axis] =
+                (controller.linear_velocity[axis] - previous.linear_velocity[axis]) / interval;
+            valid &= std::isfinite(controller.linear_acceleration[axis]);
+        }
+        controller.linear_acceleration_valid = valid;
+    }
     for (size_t hand = 0; hand < g_controller_vibration.size(); ++hand) {
         if (!state.session_running || !state.mounted || !state.controllers[hand].active) {
             g_controller_vibration[hand] = 0;
@@ -39,14 +63,15 @@ void SetDeviceState(const DeviceState& state) {
         ++g_controller_sequence;
         std::array<ControllerSample, 2> samples;
         for (size_t hand = 0; hand < samples.size(); ++hand) {
-            samples[hand] = {state.controllers[hand], state.sample_time, g_controller_sequence};
+            samples[hand] = {updated_state.controllers[hand], state.sample_time,
+                             g_controller_sequence};
         }
         g_controller_history.push_back(samples);
         if (g_controller_history.size() > 32) {
             g_controller_history.pop_front();
         }
     }
-    g_state = state;
+    g_state = updated_state;
 }
 
 bool SetControllerVibration(std::size_t hand, std::uint8_t intensity) {
