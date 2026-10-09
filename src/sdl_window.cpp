@@ -430,7 +430,10 @@ void WindowSDL::OnGamepadEvent(const SDL_Event* event) {
         case SDL_SENSOR_ACCEL:
             gamepad = controllers.GetGamepadIndexFromJoystickId(event->gsensor.which);
             if (gamepad < 5) {
-                controllers[gamepad]->UpdateAcceleration(event->gsensor.data);
+                controllers[gamepad]->UpdateAcceleration(event->gsensor.data,
+                                                         event->gsensor.sensor_timestamp != 0
+                                                             ? event->gsensor.sensor_timestamp
+                                                             : event->gsensor.timestamp);
             }
             break;
         default:

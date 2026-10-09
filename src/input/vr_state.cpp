@@ -19,6 +19,7 @@ namespace {
 std::mutex g_mutex;
 DeviceState g_state;
 std::atomic<std::int32_t> g_active_user{-1};
+std::atomic<std::uint64_t> g_pad_recenter_sequence{};
 std::optional<std::array<FieldOfView, 2>> g_render_field_of_view;
 std::optional<std::array<float, 3>> g_seated_pad_position;
 std::optional<std::array<float, 3>> g_camera_pad_origin;
@@ -82,6 +83,7 @@ void ResetTrackingOrigin() {
     g_seated_pad_position.reset();
     g_camera_pad_origin.reset();
     g_controller_history.clear();
+    ++g_pad_recenter_sequence;
 }
 
 void SetDeviceState(const DeviceState& state) {
@@ -208,7 +210,12 @@ bool RecenterSeatedPad() {
     g_seated_pad_position.reset();
     g_camera_pad_origin.reset();
     UpdateSeatedPadPosition(g_state);
+    ++g_pad_recenter_sequence;
     return true;
+}
+
+std::uint64_t GetPadRecenterSequence() {
+    return g_pad_recenter_sequence.load();
 }
 
 bool SetControllerVibration(std::size_t hand, std::uint8_t intensity) {

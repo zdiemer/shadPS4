@@ -1282,6 +1282,8 @@ set(INPUT src/input/controller.cpp
           src/input/optical_tracker.h
           src/input/psvr_camera.cpp
           src/input/psvr_camera.h
+          src/input/vr_gamepad_motion.cpp
+          src/input/vr_gamepad_motion.h
           src/input/vr_state.cpp
           src/input/vr_state.h
           src/input/controller_state.cpp

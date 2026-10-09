@@ -231,7 +231,20 @@ std::optional<State> GameController::ReadMotionState() {
         !SDL_GamepadSensorEnabled(m_sdl_gamepad, SDL_SENSOR_GYRO)) {
         return std::nullopt;
     }
-    return m_state;
+    auto state = m_state;
+    if (vr.connected && vr.session_running && vr_gamepad_motion.HasOrientation()) {
+        const auto sequence = Vr::GetPadRecenterSequence();
+        if (vr.mounted && vr.orientation_valid && vr_gamepad_recenter_sequence != sequence) {
+            vr_gamepad_motion.Recenter(vr.head_pose.orientation);
+            vr_gamepad_recenter_sequence = sequence;
+        }
+        const auto& q = vr_gamepad_motion.GetOrientation();
+        const auto gyro =
+            vr_gamepad_motion.GetAngularVelocity({gyro_buf[0], gyro_buf[1], gyro_buf[2]});
+        state.orientation = {q[0], q[1], q[2], q[3]};
+        state.angularVelocity = {gyro[0], gyro[1], gyro[2]};
+    }
+    return state;
 }
 
 int GameController::ReadStates(State* states, int states_num) {
@@ -282,9 +295,13 @@ void GameController::UpdateGyro(const float gyro[3]) {
     std::memcpy(gyro_buf, gyro, sizeof(gyro_buf));
 }
 
-void GameController::UpdateAcceleration(const float acceleration[3]) {
+void GameController::UpdateAcceleration(const float acceleration[3], u64 sensor_timestamp) {
     std::lock_guard lock{m_state_mutex};
     std::memcpy(accel_buf, acceleration, sizeof(accel_buf));
+    if (receive_vr_input && has_motion_sensors && EmulatorSettings.IsOpenXrEnabled()) {
+        vr_gamepad_motion.Update({accel_buf[0], accel_buf[1], accel_buf[2]},
+                                 {gyro_buf[0], gyro_buf[1], gyro_buf[2]}, sensor_timestamp);
+    }
 }
 
 void GameController::PollState() {
@@ -350,6 +367,8 @@ void GameController::SetTouchpadState(int touch_index, bool touch_down, float x,
 void GameController::ConnectController(SDL_Gamepad* pad) {
     std::lock_guard lock{m_state_mutex};
     m_sdl_gamepad = pad;
+    vr_gamepad_motion = {};
+    vr_gamepad_recenter_sequence.reset();
     has_motion_sensors =
         pad && EmulatorSettings.IsMotionControlsEnabled() &&
         (SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO) || SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL));
@@ -373,6 +392,8 @@ void GameController::DisconnectController() {
     m_states_queue.Clear();
     m_sdl_gamepad = nullptr;
     has_motion_sensors = false;
+    vr_gamepad_motion = {};
+    vr_gamepad_recenter_sequence.reset();
 
     const u8 connected_count = m_state.connected_count;
     m_state = {};

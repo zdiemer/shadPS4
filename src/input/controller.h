@@ -15,6 +15,7 @@
 #include "common/ring_buffer_queue.h"
 #include "core/libraries/pad/pad.h"
 #include "core/libraries/system/userservice.h"
+#include "input/vr_gamepad_motion.h"
 
 namespace Input {
 
@@ -98,7 +99,7 @@ public:
     void Button(Libraries::Pad::OrbisPadButtonDataOffset button, bool isPressed);
     void Axis(Input::Axis axis, int value, bool smooth = true);
     void UpdateGyro(const float gyro[3]);
-    void UpdateAcceleration(const float acceleration[3]);
+    void UpdateAcceleration(const float acceleration[3], u64 sensor_timestamp = 0);
     void PollState();
     void ResetOrientation();
     void SetVrInputUser(std::optional<s32> user);
@@ -135,6 +136,8 @@ private:
     u8 vr_touch_id{};
     u64 vr_touch_down_timestamp{};
     u64 m_last_orientation_update{};
+    Vr::GamepadMotion vr_gamepad_motion;
+    std::optional<u64> vr_gamepad_recenter_sequence;
     Colour colour{};
     std::optional<Colour> override_colour{};
 
