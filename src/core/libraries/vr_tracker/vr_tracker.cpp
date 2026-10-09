@@ -61,6 +61,10 @@ static s32 g_gun_handle = -1;
 static s32 g_hmd_handle = -1;
 
 static std::optional<Input::State> GetPadMotionState() {
+    const auto state = Input::Vr::GetDeviceState();
+    if (!state.connected || !state.session_running) {
+        return std::nullopt;
+    }
     auto* controller = Pad::GetController(g_pad_handle);
     return controller ? controller->ReadMotionState() : std::nullopt;
 }
@@ -320,6 +324,8 @@ s32 PS4_SYSV_ABI sceVrTrackerInit(const OrbisVrTrackerInitParam* param) {
     g_library_initialized = true;
     g_frame_state = FrameState::Idle;
     g_camera_timestamp.reset();
+    g_camera_frame = 0;
+    g_camera_permit = ORBIS_VR_TRACKER_DEVICE_PERMIT_ALL;
     g_calibration.fill({});
     g_pad_led_color = ORBIS_VR_TRACKER_LED_COLOR_BLUE;
     g_relative_orientation = {0.0f, 0.0f, 0.0f, 1.0f};
@@ -803,6 +809,18 @@ s32 PS4_SYSV_ABI sceVrTrackerRecalibrate(const OrbisVrTrackerRecalibrateParam* p
     }
     }
 
+    if (device_type == ORBIS_VR_TRACKER_DEVICE_DUALSHOCK4 && GetPadMotionState() &&
+        !Camera::IsVrCameraActive()) {
+        if (!Input::Vr::GetDeviceState().seated_pad) {
+            return ORBIS_VR_TRACKER_ERROR_NOT_SUPPORTED;
+        }
+        Input::Vr::RecenterSeatedPad();
+        if (!Input::Vr::GetSeatedPadPosition()) {
+            return ORBIS_VR_TRACKER_ERROR_DEVICE_NOT_ORIENTED;
+        }
+        g_calibration[device_type] = {};
+        return ORBIS_OK;
+    }
     g_calibration[device_type] = {
         .state = CalibrationState::Requested,
         .type = param->calibration_type,
@@ -1039,6 +1057,8 @@ s32 PS4_SYSV_ABI sceVrTrackerTerm() {
     g_library_initialized = false;
     g_frame_state = FrameState::Idle;
     g_camera_timestamp.reset();
+    g_camera_frame = 0;
+    g_camera_permit = ORBIS_VR_TRACKER_DEVICE_PERMIT_ALL;
     g_calibration.fill({});
     g_hmd_handle = g_pad_handle = g_gun_handle = -1;
     g_pad_led_color = ORBIS_VR_TRACKER_LED_COLOR_BLUE;
