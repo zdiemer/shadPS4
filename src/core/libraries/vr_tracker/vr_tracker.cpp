@@ -546,11 +546,12 @@ s32 PS4_SYSV_ABI sceVrTrackerGetResult(const OrbisVrTrackerGetResultParam* param
         if (controller.orientation_valid || controller.position_valid) {
             result->status = ORBIS_VR_TRACKER_STATUS_TRACKING;
         }
+        const bool position_valid =
+            controller.position_valid && (!move_registered || controller.orientation_valid);
         result->position_quality =
-            controller.position_valid
-                ? (controller.position_tracked ? ORBIS_VR_TRACKER_QUALITY_FULL
-                                               : ORBIS_VR_TRACKER_QUALITY_PARTIAL)
-                : ORBIS_VR_TRACKER_QUALITY_NONE;
+            position_valid ? (controller.position_tracked ? ORBIS_VR_TRACKER_QUALITY_FULL
+                                                          : ORBIS_VR_TRACKER_QUALITY_PARTIAL)
+                           : ORBIS_VR_TRACKER_QUALITY_NONE;
         result->orientation_quality =
             controller.orientation_valid
                 ? (controller.orientation_tracked ? ORBIS_VR_TRACKER_QUALITY_FULL
@@ -559,18 +560,34 @@ s32 PS4_SYSV_ABI sceVrTrackerGetResult(const OrbisVrTrackerGetResultParam* param
         const auto& origin = move_registered
                                  ? g_move_relative_orientation[move - g_move_handles.begin()]
                                  : g_pad_relative_orientation;
-        const auto pose =
-            ConvertPose(controller.grip_pose,
-                        param->orientation_type == ORBIS_VR_TRACKER_ORIENTATION_RELATIVE, origin);
+        auto device_pose = controller.grip_pose;
+        std::array<float, 3> sphere_offset{};
+        if (move_registered && position_valid) {
+            const auto& q = controller.grip_pose.orientation;
+            sphere_offset =
+                Input::Vr::RotateToLocal({-q[0], -q[1], -q[2], q[3]}, {0.0f, 0.0f, -0.09f});
+            for (size_t axis = 0; axis < sphere_offset.size(); ++axis) {
+                device_pose.position[axis] += sphere_offset[axis];
+            }
+        }
+        const auto pose = ConvertPose(
+            device_pose, param->orientation_type == ORBIS_VR_TRACKER_ORIENTATION_RELATIVE, origin);
         if (move_registered) {
             result->move_info.device_pose = pose;
         } else {
             result->pad_info.device_pose = pose;
         }
         if (controller.linear_velocity_valid) {
-            result->velocity_x = controller.linear_velocity[0];
-            result->velocity_y = controller.linear_velocity[1];
-            result->velocity_z = controller.linear_velocity[2];
+            auto velocity = controller.linear_velocity;
+            if (move_registered && position_valid && controller.angular_velocity_valid) {
+                const auto& omega = controller.angular_velocity;
+                velocity[0] += omega[1] * sphere_offset[2] - omega[2] * sphere_offset[1];
+                velocity[1] += omega[2] * sphere_offset[0] - omega[0] * sphere_offset[2];
+                velocity[2] += omega[0] * sphere_offset[1] - omega[1] * sphere_offset[0];
+            }
+            result->velocity_x = velocity[0];
+            result->velocity_y = velocity[1];
+            result->velocity_z = velocity[2];
         }
         if (controller.angular_velocity_valid) {
             result->angular_velocity_x = controller.angular_velocity[0];
