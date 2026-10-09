@@ -12,6 +12,7 @@
 #include "core/libraries/hmd/hmd_error.h"
 #include "core/libraries/kernel/equeue.h"
 #include "core/libraries/libs.h"
+#include "core/libraries/videoout/buffer.h"
 #include "core/libraries/videoout/video_out.h"
 #include "core/memory.h"
 #include "video_core/amdgpu/resource.h"
@@ -318,7 +319,8 @@ s32 PS4_SYSV_ABI sceHmdReprojectionInitialize(const OrbisHmdReprojectionInitPara
     if (param == nullptr) {
         return ORBIS_HMD_ERROR_PARAMETER_NULL;
     }
-    if (mode > 2 || flags != 0) {
+    if (!Core::Memory::Instance()->IsValidMapping(reinterpret_cast<VAddr>(param), sizeof(*param)) ||
+        mode > 2 || flags != 0) {
         return ORBIS_HMD_ERROR_PARAMETER_INVALID;
     }
     g_initialized = true;
@@ -356,7 +358,8 @@ s32 PS4_SYSV_ABI sceHmdReprojectionSetDisplayBuffers(s32 handle, s32 start, s32 
     if (!g_initialized) {
         return ORBIS_HMD_ERROR_REPROJECTION_NOT_INITIALIZED;
     }
-    if (handle <= 0 || start < 0 || start >= 16 || count <= 0 || count > 16 - start || flags != 0) {
+    if (handle <= 0 || start < 0 || start >= VideoOut::MaxDisplayBuffers || count <= 0 ||
+        count > VideoOut::MaxDisplayBuffers - start || flags != 0) {
         return ORBIS_HMD_ERROR_PARAMETER_INVALID;
     }
     uintptr_t labels{};
