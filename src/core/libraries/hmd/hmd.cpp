@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <cmath>
 
 #include "common/elf_info.h"
@@ -17,7 +18,7 @@ namespace Libraries::Hmd {
 static bool g_library_initialized = false;
 static s32 g_firmware_version = 0;
 static s32 g_internal_handle = 0;
-static Libraries::UserService::OrbisUserServiceUserId g_user_id = -1;
+static std::atomic<Libraries::UserService::OrbisUserServiceUserId> g_user_id{-1};
 
 void BindDeviceToUser(Libraries::UserService::OrbisUserServiceUserId user_id) {
     g_user_id = user_id;
@@ -35,7 +36,7 @@ static void FillDeviceInformation(OrbisHmdDeviceInformation& info) {
     const auto state = Input::Vr::GetDeviceState();
     info = {};
     info.status = GetDeviceStatus(state);
-    info.user_id = g_user_id;
+    info.user_id = g_user_id.load();
     if (state.connected) {
         info.device_info.panel_resolution = {1920, 1080};
         info.hmu_mount = state.mounted;
