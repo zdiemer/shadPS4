@@ -17,7 +17,7 @@ class OpenXRInput {
 public:
     explicit OpenXRInput(XrInstance instance);
     ~OpenXRInput();
-    bool Initialize(bool frame_profile);
+    bool Initialize(bool frame_profile, bool hp_profile = false, bool pico_profile = false);
     bool Attach(XrSession session);
     void LogInteractionProfiles();
     void Sync(bool focused, Input::Vr::DeviceState& state);

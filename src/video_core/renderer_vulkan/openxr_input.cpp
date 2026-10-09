@@ -62,7 +62,7 @@ XrAction OpenXRInput::CreateAction(const char* name, XrActionType type) {
     return action;
 }
 
-bool OpenXRInput::Initialize(bool frame_profile) {
+bool OpenXRInput::Initialize(bool frame_profile, bool hp_profile, bool pico_profile) {
     hands = {Path("/user/hand/left"), Path("/user/hand/right")};
     if (hands[0] == XR_NULL_PATH || hands[1] == XR_NULL_PATH) {
         return false;
@@ -93,7 +93,8 @@ bool OpenXRInput::Initialize(bool frame_profile) {
         return false;
     }
 
-    const auto suggest = [&](const char* profile, bool touch, bool index, bool vive, bool frame) {
+    const auto suggest = [&](const char* profile, bool touch, bool index, bool vive, bool frame,
+                             bool mixed = false) {
         std::vector<XrActionSuggestedBinding> bindings;
         const auto bind = [&](XrAction action, size_t hand, const char* component) {
             const std::string path =
@@ -107,17 +108,20 @@ bool OpenXRInput::Initialize(bool frame_profile) {
             bind(grip_pose, hand, "/input/grip/pose");
             bind(aim_pose, hand, "/input/aim/pose");
             bind(vibration, hand, "/output/haptic");
-            if (!touch && !index && !vive && !frame) {
+            if (!touch && !index && !vive && !frame && !mixed) {
                 bind(buttons[12], hand, "/input/select/click");
                 bind(buttons[4], hand, "/input/menu/click");
                 continue;
             }
             bind(trigger, hand, "/input/trigger/value");
-            bind(squeeze, hand, vive ? "/input/squeeze/click" : "/input/squeeze/value");
+            bind(squeeze, hand, vive || mixed ? "/input/squeeze/click" : "/input/squeeze/value");
             bind(stick, hand, vive ? "/input/trackpad" : "/input/thumbstick");
             bind(buttons[vive ? 13 : 11], hand,
                  vive ? "/input/trackpad/click" : "/input/thumbstick/click");
-            if (vive) {
+            if (mixed) {
+                bind(buttons[13], hand, "/input/trackpad/click");
+            }
+            if (vive || mixed) {
                 bind(buttons[hand == 0 ? 4 : 5], hand, "/input/menu/click");
             } else if (index) {
                 bind(buttons[hand == 0 ? 4 : 5], hand, "/input/trackpad/force");
@@ -156,6 +160,14 @@ bool OpenXRInput::Initialize(bool frame_profile) {
     suggest("/interaction_profiles/valve/index_controller", false, true, false, false);
     suggest("/interaction_profiles/htc/vive_controller", false, false, true, false);
     suggest("/interaction_profiles/khr/simple_controller", false, false, false, false);
+    suggest("/interaction_profiles/microsoft/motion_controller", false, false, false, false, true);
+    if (hp_profile) {
+        suggest("/interaction_profiles/hp/mixed_reality_controller", true, false, false, false);
+    }
+    if (pico_profile) {
+        suggest("/interaction_profiles/bytedance/pico_neo3_controller", true, false, false, false);
+        suggest("/interaction_profiles/bytedance/pico4_controller", true, false, false, false);
+    }
     if (frame_profile) {
         suggest("/interaction_profiles/valve/frame_controller_valve", false, false, false, true);
     }
