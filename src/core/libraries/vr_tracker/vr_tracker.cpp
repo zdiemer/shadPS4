@@ -366,8 +366,8 @@ s32 PS4_SYSV_ABI sceVrTrackerRegisterDevice2(const OrbisVrTrackerDeviceType devi
 s32 PS4_SYSV_ABI sceVrTrackerRegisterDeviceInternal(const OrbisVrTrackerDeviceType device_type,
                                                     const s32 handle, s32 led_color, s32 unk1) {
     std::scoped_lock lock{g_mutex};
-    LOG_DEBUG(Lib_VrTracker, "device_type = {}, handle = {}", static_cast<u32>(device_type),
-              handle);
+    LOG_DEBUG(Lib_VrTracker, "device_type = {}, handle = {}, led_color = {}",
+              static_cast<u32>(device_type), handle, led_color);
     if (!g_library_initialized) {
         return ORBIS_VR_TRACKER_ERROR_NOT_INIT;
     }
@@ -392,6 +392,13 @@ s32 PS4_SYSV_ABI sceVrTrackerRegisterDeviceInternal(const OrbisVrTrackerDeviceTy
         g_pad_handle = handle;
         g_pad_led_color = led_color < 0 ? ORBIS_VR_TRACKER_LED_COLOR_BLUE
                                         : static_cast<OrbisVrTrackerLedColor>(led_color);
+        if (EmulatorSettings.GetVrPadPositionMode() == "camera") {
+            if (auto* controller = Pad::GetController(handle)) {
+                constexpr std::array<Input::Colour, 5> colours{
+                    {{0, 0, 255}, {255, 0, 0}, {0, 255, 255}, {255, 0, 255}, {255, 255, 0}}};
+                controller->SetLightBarRGB(colours[g_pad_led_color]);
+            }
+        }
         break;
     }
     case OrbisVrTrackerDeviceType::ORBIS_VR_TRACKER_DEVICE_MOVE: {
