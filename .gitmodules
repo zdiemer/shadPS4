@@ -169,3 +169,4 @@
 [submodule "externals/openxr-sdk"]
 	path = externals/openxr-sdk
 	url = https://github.com/KhronosGroup/OpenXR-SDK.git
+	shallow = true

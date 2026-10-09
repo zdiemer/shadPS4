@@ -267,18 +267,14 @@ if (ENABLE_SYSTEM_LIBRARIES)
         find_package(date 3.0.1 CONFIG)
         find_package(epoll-shim 3.14 CONFIG)
     endif()
+    if (ENABLE_OPENXR)
+        find_package(OpenXR 1.1 CONFIG)
+    endif()
     list(POP_BACK CMAKE_MODULE_PATH)
 endif()
 
 add_subdirectory(externals)
 
-if (ENABLE_OPENXR)
-    set(BUILD_API_LAYERS OFF CACHE BOOL "" FORCE)
-    set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
-    set(BUILD_CONFORMANCE_TESTS OFF CACHE BOOL "" FORCE)
-    set(BUILD_SDK_TESTS OFF CACHE BOOL "" FORCE)
-    add_subdirectory(externals/openxr-sdk EXCLUDE_FROM_ALL)
-endif()
 include_directories(src)
 
 set(AJM_LIB src/core/libraries/ajm/ajm.cpp

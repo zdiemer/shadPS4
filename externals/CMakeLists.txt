@@ -83,6 +83,17 @@ if (NOT TARGET SDL3::SDL3)
     add_subdirectory(sdl3)
 endif()
 
+if (ENABLE_OPENXR AND NOT TARGET OpenXR::openxr_loader)
+    function(add_bundled_openxr)
+        set(BUILD_API_LAYERS OFF)
+        set(BUILD_TESTS OFF)
+        set(BUILD_CONFORMANCE_TESTS OFF)
+        set(BUILD_SDK_TESTS OFF)
+        add_subdirectory(openxr-sdk EXCLUDE_FROM_ALL)
+    endfunction()
+    add_bundled_openxr()
+endif()
+
 # vulkan-headers
 if (NOT TARGET Vulkan::Headers)
     set(VULKAN_HEADERS_ENABLE_MODULE OFF)
