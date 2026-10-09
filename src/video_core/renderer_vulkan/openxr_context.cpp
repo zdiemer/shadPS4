@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
-#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <mutex>
@@ -16,6 +15,7 @@
 
 #include "common/debug.h"
 #include "common/logging/log.h"
+#include "core/emulator_settings.h"
 #include "input/vr_state.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -106,6 +106,8 @@ struct OpenXRContext::Impl {
         XrSwapchain handle{XR_NULL_HANDLE};
         vk::Extent2D size{};
         std::vector<XrSwapchainImageVulkanKHR> images;
+        std::optional<u32> acquired_index;
+        bool waited{};
     };
     std::array<EyeSwapchain, 2> swapchains{};
     std::array<XrCompositionLayerProjectionView, 2> projection_views{};
@@ -114,10 +116,31 @@ struct OpenXRContext::Impl {
     bool stereo_ready{};
     std::unique_ptr<OpenXRInput> input;
 
+    bool InitializeInstance();
+    bool CreateSessionResources();
+    void DestroySession();
+    void PublishDevice();
     bool CreateSwapchains();
+    void CheckResult(XrResult result) {
+        if (result == XR_ERROR_INSTANCE_LOST) {
+            recover_instance = true;
+        } else if (result == XR_ERROR_SESSION_LOST || result == XR_SESSION_LOSS_PENDING) {
+            recover_session = true;
+        }
+    }
+    XrGraphicsBindingVulkanKHR graphics_binding{XR_TYPE_GRAPHICS_BINDING_VULKAN_KHR};
+    bool frame_profile{};
+    bool hp_profile{};
+    bool pico_profile{};
+    std::atomic<bool> recover_session{};
+    std::atomic<bool> recover_instance{};
+    std::chrono::steady_clock::time_point last_recovery_attempt{};
+    XrTime reference_change{};
     PFN_xrGetVulkanGraphicsDeviceKHR get_graphics_device{};
     std::vector<std::string> instance_extensions;
     std::vector<std::string> device_extensions;
+    std::vector<std::string> enabled_instance_extensions;
+    std::vector<std::string> enabled_device_extensions;
 #ifdef _WIN32
     PFN_xrConvertWin32PerformanceCounterToTimeKHR convert_time{};
 #else
@@ -130,40 +153,51 @@ struct OpenXRContext::Impl {
     ~Impl() {
         Input::Vr::SetTrackingProvider({});
         Input::Vr::SetDeviceState({});
-        if (session_running) {
-            xrRequestExitSession(session);
-        }
-        input.reset();
-        for (const auto& swapchain : swapchains) {
-            if (swapchain.handle != XR_NULL_HANDLE) {
-                xrDestroySwapchain(swapchain.handle);
-            }
-        }
-        if (view_space != XR_NULL_HANDLE) {
-            xrDestroySpace(view_space);
-        }
-        if (local_space != XR_NULL_HANDLE) {
-            xrDestroySpace(local_space);
-        }
-        if (session != XR_NULL_HANDLE) {
-            xrDestroySession(session);
-        }
+        DestroySession();
         if (instance != XR_NULL_HANDLE) {
             xrDestroyInstance(instance);
         }
     }
 };
 
-OpenXRContext::OpenXRContext() {
-    const char* enabled = std::getenv("SHADPS4_OPENXR");
-    if (enabled == nullptr || std::strcmp(enabled, "1") != 0) {
-        return;
+void OpenXRContext::Impl::DestroySession() {
+    if (session_running) {
+        xrRequestExitSession(session);
     }
+    input.reset();
+    for (auto& swapchain : swapchains) {
+        if (swapchain.handle != XR_NULL_HANDLE) {
+            xrDestroySwapchain(swapchain.handle);
+        }
+    }
+    if (view_space != XR_NULL_HANDLE) {
+        xrDestroySpace(view_space);
+    }
+    if (local_space != XR_NULL_HANDLE) {
+        xrDestroySpace(local_space);
+    }
+    if (session != XR_NULL_HANDLE) {
+        xrDestroySession(session);
+    }
+    swapchains = {};
+    projection_views = {};
+    session = XR_NULL_HANDLE;
+    local_space = XR_NULL_HANDLE;
+    view_space = XR_NULL_HANDLE;
+    session_state = XR_SESSION_STATE_UNKNOWN;
+    session_running = false;
+    stereo_ready = false;
+    reference_change = 0;
+    last_begin_attempt = {};
+}
+
+bool OpenXRContext::Impl::InitializeInstance() {
+    auto* context = this;
 
     u32 extension_count = 0;
     if (XR_FAILED(xrEnumerateInstanceExtensionProperties(nullptr, 0, &extension_count, nullptr))) {
         LOG_WARNING(Render_Vulkan, "Failed to enumerate OpenXR extensions");
-        return;
+        return false;
     }
     std::vector<XrExtensionProperties> extensions(extension_count);
     for (auto& extension : extensions) {
@@ -175,41 +209,54 @@ OpenXRContext::OpenXRContext() {
             return std::strcmp(extension.extensionName, XR_KHR_VULKAN_ENABLE_EXTENSION_NAME) == 0;
         })) {
         LOG_WARNING(Render_Vulkan, "OpenXR runtime does not support Vulkan integration");
-        return;
+        return false;
     }
 
-    auto context = std::make_unique<Impl>();
-    if (const char* mode = std::getenv("SHADPS4_VR_INPUT")) {
-        if (std::strcmp(mode, "pad") == 0) {
+    {
+        const auto mode = EmulatorSettings.GetVrControllerMode();
+        if (mode == "pad") {
             context->controller_mode = Input::Vr::ControllerMode::Pad;
-        } else if (std::strcmp(mode, "move") == 0) {
+        } else if (mode == "move") {
             context->controller_mode = Input::Vr::ControllerMode::Move;
-        } else if (std::strcmp(mode, "both") != 0) {
+        } else if (mode != "both") {
             LOG_WARNING(Render_Vulkan, "Unknown OpenXR controller mode: {}", mode);
         }
         LOG_INFO(Render_Vulkan, "OpenXR controller mode: {}",
                  static_cast<u32>(context->controller_mode));
     }
-    if (const char* source = std::getenv("SHADPS4_VR_PAD_MOTION")) {
-        if (std::strcmp(source, "gamepad") == 0) {
+    {
+        const auto source = EmulatorSettings.GetVrPadMotionSource();
+        if (source == "gamepad") {
             context->pad_motion_source = Input::Vr::PadMotionSource::Gamepad;
-        } else if (std::strcmp(source, "vr") == 0) {
+        } else if (source == "vr") {
             context->pad_motion_source = Input::Vr::PadMotionSource::VrController;
-        } else if (std::strcmp(source, "auto") != 0) {
+        } else if (source != "auto") {
             LOG_WARNING(Render_Vulkan, "Unknown OpenXR Pad motion source: {}", source);
         }
     }
     LOG_INFO(Render_Vulkan, "OpenXR Pad motion source: {}",
              static_cast<u32>(context->pad_motion_source));
-    if (const char* position = std::getenv("SHADPS4_VR_PAD_POSITION")) {
-        context->seated_pad = std::strcmp(position, "seated") == 0;
-        if (!context->seated_pad && std::strcmp(position, "none") != 0) {
+    {
+        const auto position = EmulatorSettings.GetVrPadPositionMode();
+        context->seated_pad = position == "seated";
+        if (!context->seated_pad && position != "none") {
             LOG_WARNING(Render_Vulkan, "Unknown OpenXR Pad position mode: {}", position);
         }
     }
     LOG_INFO(Render_Vulkan, "OpenXR seated Pad position: {}", context->seated_pad);
     std::vector<const char*> enabled_extensions{XR_KHR_VULKAN_ENABLE_EXTENSION_NAME};
-    const bool frame_profile = std::ranges::any_of(extensions, [](const auto& extension) {
+    const auto enable_profile = [&](const char* name) {
+        if (std::ranges::any_of(extensions, [name](const auto& extension) {
+                return std::strcmp(extension.extensionName, name) == 0;
+            })) {
+            enabled_extensions.push_back(name);
+            return true;
+        }
+        return false;
+    };
+    hp_profile = enable_profile(XR_EXT_HP_MIXED_REALITY_CONTROLLER_EXTENSION_NAME);
+    pico_profile = enable_profile(XR_BD_CONTROLLER_INTERACTION_EXTENSION_NAME);
+    frame_profile = std::ranges::any_of(extensions, [](const auto& extension) {
         return std::strcmp(extension.extensionName, "XR_VALVE_frame_controller_interaction") == 0;
     });
     if (frame_profile) {
@@ -244,7 +291,7 @@ OpenXRContext::OpenXRContext() {
     if (XR_FAILED(instance_result)) {
         LOG_WARNING(Render_Vulkan, "Failed to create OpenXR instance: {}",
                     static_cast<s32>(instance_result));
-        return;
+        return false;
     }
     if (time_supported) {
 #ifdef _WIN32
@@ -257,7 +304,7 @@ OpenXRContext::OpenXRContext() {
     }
 
     context->input = std::make_unique<OpenXRInput>(context->instance);
-    if (!context->input->Initialize(frame_profile)) {
+    if (!context->input->Initialize(frame_profile, hp_profile, pico_profile)) {
         LOG_WARNING(Render_Vulkan, "Failed to initialize OpenXR controller actions");
         context->input.reset();
     }
@@ -265,7 +312,7 @@ OpenXRContext::OpenXRContext() {
     system_info.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
     if (XR_FAILED(xrGetSystem(context->instance, &system_info, &context->system))) {
         LOG_WARNING(Render_Vulkan, "No OpenXR headset is available");
-        return;
+        return false;
     }
     if (user_presence_extension) {
         XrSystemUserPresencePropertiesEXT presence{XR_TYPE_SYSTEM_USER_PRESENCE_PROPERTIES_EXT};
@@ -289,19 +336,19 @@ OpenXRContext::OpenXRContext() {
     if (!get_instance_extensions || !get_device_extensions || !context->get_graphics_device ||
         !get_requirements) {
         LOG_WARNING(Render_Vulkan, "OpenXR Vulkan functions are unavailable");
-        return;
+        return false;
     }
 
     XrGraphicsRequirementsVulkanKHR requirements{XR_TYPE_GRAPHICS_REQUIREMENTS_VULKAN_KHR};
     if (XR_FAILED(get_requirements(context->instance, context->system, &requirements))) {
         LOG_WARNING(Render_Vulkan, "Failed to query OpenXR Vulkan requirements");
-        return;
+        return false;
     }
     constexpr XrVersion vulkan_version = XR_MAKE_VERSION(
         VK_VERSION_MAJOR(TargetVulkanApiVersion), VK_VERSION_MINOR(TargetVulkanApiVersion), 0);
     if (requirements.minApiVersionSupported > vulkan_version) {
         LOG_WARNING(Render_Vulkan, "OpenXR runtime requires an unsupported Vulkan version");
-        return;
+        return false;
     }
     if (requirements.maxApiVersionSupported < vulkan_version) {
         LOG_WARNING(Render_Vulkan, "OpenXR runtime has only tested Vulkan {}.{}; using {}.{}",
@@ -317,10 +364,19 @@ OpenXRContext::OpenXRContext() {
         ReadVulkanExtensions(get_device_extensions, context->instance, context->system);
     if (context->instance_extensions.empty() || context->device_extensions.empty()) {
         LOG_WARNING(Render_Vulkan, "OpenXR runtime did not report Vulkan extensions");
-        return;
+        return false;
     }
-    impl = std::move(context);
     LOG_INFO(Render_Vulkan, "OpenXR headset detected");
+    return true;
+}
+
+OpenXRContext::OpenXRContext() {
+    if (EmulatorSettings.IsOpenXrEnabled()) {
+        auto context = std::make_unique<Impl>();
+        if (context->InitializeInstance()) {
+            impl = std::move(context);
+        }
+    }
 }
 
 OpenXRContext::~OpenXRContext() = default;
@@ -371,63 +427,80 @@ bool OpenXRContext::CreateSession(VkInstance instance, VkPhysicalDevice physical
     binding.queueFamilyIndex = queue_family_index;
     binding.queueIndex = 0;
 
+    impl->graphics_binding = binding;
+    impl->enabled_instance_extensions = impl->instance_extensions;
+    impl->enabled_device_extensions = impl->device_extensions;
+    if (!impl->CreateSessionResources()) {
+        impl.reset();
+        return false;
+    }
+    impl->PublishDevice();
+    return true;
+}
+
+bool OpenXRContext::Impl::CreateSessionResources() {
     XrSessionCreateInfo create_info{XR_TYPE_SESSION_CREATE_INFO};
-    create_info.next = &binding;
-    create_info.systemId = impl->system;
-    const XrResult result = xrCreateSession(impl->instance, &create_info, &impl->session);
+    create_info.next = &graphics_binding;
+    create_info.systemId = system;
+    const XrResult result = xrCreateSession(instance, &create_info, &session);
     if (XR_FAILED(result)) {
         LOG_WARNING(Render_Vulkan, "Failed to create OpenXR session: {}", static_cast<s32>(result));
         return false;
     }
-    if (impl->input && !impl->input->Attach(impl->session)) {
+    if (!input) {
+        input = std::make_unique<OpenXRInput>(instance);
+        if (!input->Initialize(frame_profile, hp_profile, pico_profile)) {
+            input.reset();
+        }
+    }
+    if (input && !input->Attach(session)) {
         LOG_WARNING(Render_Vulkan, "Failed to attach OpenXR controller actions");
-        impl->input.reset();
+        input.reset();
     }
     XrReferenceSpaceCreateInfo space_info{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
     space_info.poseInReferenceSpace.orientation.w = 1.0f;
     space_info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
     float camera_distance = 2.0f;
-    if (const char* value = std::getenv("SHADPS4_VR_CAMERA_DISTANCE")) {
-        char* end{};
-        const float distance = std::strtof(value, &end);
-        if (end != value && *end == '\0' && std::isfinite(distance) && distance >= 0.0f &&
-            distance <= 5.0f) {
-            camera_distance = distance;
-        } else {
-            LOG_WARNING(Render_Vulkan, "Invalid VR camera distance: {}", value);
-        }
+    const float distance = EmulatorSettings.GetVrCameraDistance();
+    if (std::isfinite(distance) && distance >= 0.0f && distance <= 5.0f) {
+        camera_distance = distance;
+    } else {
+        LOG_WARNING(Render_Vulkan, "Invalid VR camera distance: {}", distance);
     }
     space_info.poseInReferenceSpace.position.z = -camera_distance;
-    if (XR_FAILED(xrCreateReferenceSpace(impl->session, &space_info, &impl->local_space))) {
+    if (XR_FAILED(xrCreateReferenceSpace(session, &space_info, &local_space))) {
         LOG_WARNING(Render_Vulkan, "Failed to create OpenXR local reference space");
-        impl.reset();
+        DestroySession();
         return false;
     }
     LOG_INFO(Render_Vulkan, "OpenXR virtual camera distance: {} m", camera_distance);
     space_info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
     space_info.poseInReferenceSpace.position = {};
-    if (XR_FAILED(xrCreateReferenceSpace(impl->session, &space_info, &impl->view_space))) {
+    if (XR_FAILED(xrCreateReferenceSpace(session, &space_info, &view_space))) {
         LOG_WARNING(Render_Vulkan, "Failed to create OpenXR view reference space");
-        impl.reset();
+        DestroySession();
         return false;
     }
-    if (!impl->CreateSwapchains()) {
+    if (!CreateSwapchains()) {
         LOG_WARNING(Render_Vulkan, "OpenXR stereo swapchain creation failed");
-        impl.reset();
+        DestroySession();
         return false;
     }
-    Input::Vr::SetDeviceState({.controller_mode = impl->controller_mode,
-                               .pad_motion_source = impl->pad_motion_source,
-                               .seated_pad = impl->seated_pad,
+    return true;
+}
+
+void OpenXRContext::Impl::PublishDevice() {
+    Input::Vr::SetDeviceState({.controller_mode = controller_mode,
+                               .pad_motion_source = pad_motion_source,
+                               .seated_pad = seated_pad,
                                .connected = true});
-    if (impl->convert_time) {
+    if (convert_time) {
         Input::Vr::SetTrackingProvider(
-            [context = impl.get()](auto time) { return context->Locate(time); });
+            [context = this](auto time) { return context->Locate(time); });
     } else {
         LOG_WARNING(Render_Vulkan, "OpenXR runtime has no host clock conversion extension");
     }
     LOG_INFO(Render_Vulkan, "OpenXR Vulkan session created");
-    return true;
 }
 
 bool OpenXRContext::Impl::CreateSwapchains() {
@@ -500,25 +573,39 @@ bool OpenXRContext::RenderStereo(const std::array<Input::Vr::Pose, 2>& poses,
     }
     std::array<vk::Image, 2> images{};
     std::array<vk::Extent2D, 2> sizes{};
-    u32 acquired = 0;
     auto release = [&] {
         XrSwapchainImageReleaseInfo release_info{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
         std::scoped_lock queue_lock{Scheduler::submit_mutex};
         bool success = true;
-        for (u32 eye = 0; eye < acquired; ++eye) {
-            success &=
-                XR_SUCCEEDED(xrReleaseSwapchainImage(impl->swapchains[eye].handle, &release_info));
+        for (auto& swapchain : impl->swapchains) {
+            if (!swapchain.waited) {
+                continue;
+            }
+            const auto result = xrReleaseSwapchainImage(swapchain.handle, &release_info);
+            impl->CheckResult(result);
+            if (XR_SUCCEEDED(result)) {
+                swapchain.acquired_index.reset();
+                swapchain.waited = false;
+            } else {
+                success = false;
+                LOG_WARNING(Render_Vulkan, "OpenXR eye release failed: {}",
+                            static_cast<s32>(result));
+            }
         }
         return success;
     };
     for (u32 eye = 0; eye < images.size(); ++eye) {
         auto& swapchain = impl->swapchains[eye];
         XrSwapchainImageAcquireInfo acquire_info{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-        u32 index = 0;
-        XrResult result;
-        {
+        XrResult result = XR_SUCCESS;
+        if (!swapchain.acquired_index) {
+            u32 index = 0;
             std::scoped_lock queue_lock{Scheduler::submit_mutex};
             result = xrAcquireSwapchainImage(swapchain.handle, &acquire_info, &index);
+            impl->CheckResult(result);
+            if (XR_SUCCEEDED(result)) {
+                swapchain.acquired_index = index;
+            }
         }
         if (XR_FAILED(result)) {
             impl->stereo_ready = false;
@@ -527,19 +614,22 @@ bool OpenXRContext::RenderStereo(const std::array<Input::Vr::Pose, 2>& poses,
             return false;
         }
         XrSwapchainImageWaitInfo wait_info{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
-        wait_info.timeout = XR_INFINITE_DURATION;
-        {
+        wait_info.timeout = std::chrono::nanoseconds{std::chrono::milliseconds{5}}.count();
+        if (!swapchain.waited) {
             ZoneScopedN("OpenXR swapchain wait");
             result = xrWaitSwapchainImage(swapchain.handle, &wait_info);
+            impl->CheckResult(result);
         }
-        if (XR_FAILED(result)) {
+        if (result != XR_SUCCESS) {
             impl->stereo_ready = false;
             release();
-            LOG_WARNING(Render_Vulkan, "OpenXR eye wait failed: {}", static_cast<s32>(result));
+            if (result != XR_TIMEOUT_EXPIRED) {
+                LOG_WARNING(Render_Vulkan, "OpenXR eye wait failed: {}", static_cast<s32>(result));
+            }
             return false;
         }
-        ++acquired;
-        images[eye] = swapchain.images[index].image;
+        swapchain.waited = true;
+        images[eye] = swapchain.images[*swapchain.acquired_index].image;
         sizes[eye] = swapchain.size;
     }
     const bool rendered = render(images, sizes);
@@ -573,8 +663,9 @@ void OpenXRContext::ClearStereo() {
 
 std::optional<Input::Vr::DeviceState> OpenXRContext::Impl::Locate(
     std::chrono::steady_clock::time_point time) {
+    std::scoped_lock lock{stereo_mutex};
     const auto snapshot = Input::Vr::GetDeviceState();
-    if (!snapshot.connected || !snapshot.session_running || !convert_time) {
+    if (!snapshot.connected || !snapshot.session_running || !session_running || !convert_time) {
         return std::nullopt;
     }
     XrTime xr_time{};
@@ -671,12 +762,63 @@ Input::Vr::DeviceState OpenXRContext::Impl::Locate(XrTime time, Input::Vr::Devic
 
 std::chrono::nanoseconds OpenXRContext::Update() {
     RENDERER_TRACE;
-    if (!impl || impl->session == XR_NULL_HANDLE || impl->local_space == XR_NULL_HANDLE ||
+    if (!impl) {
+        return std::chrono::milliseconds{10};
+    }
+    if (impl->recover_session || impl->recover_instance) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - impl->last_recovery_attempt < std::chrono::seconds{1}) {
+            return std::chrono::milliseconds{10};
+        }
+        Input::Vr::SetTrackingProvider({});
+        Input::Vr::SetDeviceState({});
+        {
+            std::scoped_lock lock{impl->stereo_mutex};
+            impl->last_recovery_attempt = now;
+            impl->DestroySession();
+            if (impl->recover_instance) {
+                if (impl->instance != XR_NULL_HANDLE) {
+                    xrDestroyInstance(impl->instance);
+                    impl->instance = XR_NULL_HANDLE;
+                }
+                impl->convert_time = nullptr;
+                impl->get_graphics_device = nullptr;
+                impl->user_presence_supported = false;
+                if (!impl->InitializeInstance()) {
+                    return std::chrono::milliseconds{10};
+                }
+                const auto extensions_supported = [](const auto& required, const auto& enabled) {
+                    return std::ranges::all_of(required, [&](const auto& extension) {
+                        return std::ranges::find(enabled, extension) != enabled.end();
+                    });
+                };
+                if (GetGraphicsDevice(impl->graphics_binding.instance) !=
+                        impl->graphics_binding.physicalDevice ||
+                    !extensions_supported(impl->instance_extensions,
+                                          impl->enabled_instance_extensions) ||
+                    !extensions_supported(impl->device_extensions,
+                                          impl->enabled_device_extensions)) {
+                    LOG_WARNING(Render_Vulkan,
+                                "Recovered OpenXR runtime requires a different Vulkan device or "
+                                "extensions; restart the emulator to use it");
+                    return std::chrono::milliseconds{10};
+                }
+            }
+            if (!impl->CreateSessionResources()) {
+                return std::chrono::milliseconds{10};
+            }
+            impl->recover_session = false;
+            impl->recover_instance = false;
+        }
+        impl->PublishDevice();
+    }
+    if (impl->session == XR_NULL_HANDLE || impl->local_space == XR_NULL_HANDLE ||
         impl->view_space == XR_NULL_HANDLE) {
         return std::chrono::milliseconds{10};
     }
     XrEventDataBuffer event{XR_TYPE_EVENT_DATA_BUFFER};
-    while (xrPollEvent(impl->instance, &event) == XR_SUCCESS) {
+    XrResult poll_result;
+    while ((poll_result = xrPollEvent(impl->instance, &event)) == XR_SUCCESS) {
         if (event.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED) {
             const auto& changed = *reinterpret_cast<const XrEventDataSessionStateChanged*>(&event);
             if (changed.session != impl->session) {
@@ -695,6 +837,7 @@ std::chrono::nanoseconds OpenXRContext::Update() {
                        changed.state == XR_SESSION_STATE_LOSS_PENDING) {
                 impl->session_running = false;
                 impl->stereo_ready = false;
+                impl->recover_session = true;
             }
             LOG_INFO(Render_Vulkan, "OpenXR session state: {}", static_cast<s32>(changed.state));
             auto state = Input::Vr::GetDeviceState();
@@ -724,10 +867,24 @@ std::chrono::nanoseconds OpenXRContext::Update() {
             std::scoped_lock stereo_lock{impl->stereo_mutex};
             impl->session_running = false;
             impl->stereo_ready = false;
+            impl->recover_instance = true;
             Input::Vr::SetDeviceState({});
+        } else if (event.type == XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING) {
+            const auto& changed =
+                *reinterpret_cast<const XrEventDataReferenceSpaceChangePending*>(&event);
+            if (changed.session == impl->session &&
+                changed.referenceSpaceType == XR_REFERENCE_SPACE_TYPE_LOCAL) {
+                impl->reference_change = changed.changeTime;
+            }
+        } else if (event.type == XR_TYPE_EVENT_DATA_EVENTS_LOST) {
+            const auto& lost = *reinterpret_cast<const XrEventDataEventsLost*>(&event);
+            LOG_WARNING(Render_Vulkan, "OpenXR lost {} events; recreating the session",
+                        lost.lostEventCount);
+            impl->recover_session = true;
         }
         event = XrEventDataBuffer{XR_TYPE_EVENT_DATA_BUFFER};
     }
+    impl->CheckResult(poll_result);
 
     if (!impl->session_running && impl->session_state == XR_SESSION_STATE_READY) {
         const auto now = std::chrono::steady_clock::now();
@@ -737,6 +894,7 @@ std::chrono::nanoseconds OpenXRContext::Update() {
             XrSessionBeginInfo begin_info{XR_TYPE_SESSION_BEGIN_INFO};
             begin_info.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
             const auto result = xrBeginSession(impl->session, &begin_info);
+            impl->CheckResult(result);
             impl->session_running = XR_SUCCEEDED(result);
             if (XR_FAILED(result)) {
                 LOG_WARNING(Render_Vulkan, "Failed to begin OpenXR session: {}",
@@ -749,7 +907,7 @@ std::chrono::nanoseconds OpenXRContext::Update() {
             }
         }
     }
-    if (!impl->session_running) {
+    if (!impl->session_running || impl->recover_session || impl->recover_instance) {
         return std::chrono::milliseconds{10};
     }
 
@@ -759,6 +917,7 @@ std::chrono::nanoseconds OpenXRContext::Update() {
     {
         ZoneScopedN("OpenXR frame wait");
         wait_result = xrWaitFrame(impl->session, &wait_info, &frame_state);
+        impl->CheckResult(wait_result);
     }
     if (XR_FAILED(wait_result)) {
         return std::chrono::milliseconds{10};
@@ -766,7 +925,9 @@ std::chrono::nanoseconds OpenXRContext::Update() {
     XrFrameBeginInfo begin_info{XR_TYPE_FRAME_BEGIN_INFO};
     {
         std::scoped_lock queue_lock{Scheduler::submit_mutex};
-        if (XR_FAILED(xrBeginFrame(impl->session, &begin_info))) {
+        const auto result = xrBeginFrame(impl->session, &begin_info);
+        impl->CheckResult(result);
+        if (XR_FAILED(result)) {
             return std::chrono::milliseconds{10};
         }
     }
@@ -781,6 +942,13 @@ std::chrono::nanoseconds OpenXRContext::Update() {
     };
     if (const auto current = impl->Locate(state.sample_time)) {
         state = *current;
+    }
+    if (impl->reference_change != 0 && frame_state.predictedDisplayTime >= impl->reference_change) {
+        std::scoped_lock lock{impl->stereo_mutex};
+        impl->reference_change = 0;
+        impl->stereo_ready = false;
+        Input::Vr::ResetTrackingOrigin();
+        state = impl->Locate(frame_state.predictedDisplayTime, state);
     }
     if (impl->input) {
         impl->input->Sync(impl->session_state == XR_SESSION_STATE_FOCUSED, state);
@@ -805,6 +973,7 @@ std::chrono::nanoseconds OpenXRContext::Update() {
         }
         std::scoped_lock queue_lock{Scheduler::submit_mutex};
         result = xrEndFrame(impl->session, &end_info);
+        impl->CheckResult(result);
     }
     if (XR_FAILED(result)) {
         LOG_WARNING(Render_Vulkan, "OpenXR end frame failed: {}", static_cast<s32>(result));
