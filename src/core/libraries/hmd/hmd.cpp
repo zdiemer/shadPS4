@@ -55,7 +55,9 @@ s32 PS4_SYSV_ABI sceHmdInitialize(const OrbisHmdInitializeParam* param) {
     if (param == nullptr) {
         return ORBIS_HMD_ERROR_PARAMETER_NULL;
     }
-    LOG_INFO(Lib_Hmd, "HMD library initialized");
+    if (!Input::Vr::GetDeviceState().connected) {
+        LOG_WARNING(Lib_Hmd, "No VR device is available");
+    }
     if (param->reserved0 != nullptr) {
         sceHmdDistortionInitialize(param->reserved0);
     }
@@ -70,7 +72,9 @@ s32 PS4_SYSV_ABI sceHmdInitialize315(const OrbisHmdInitializeParam* param) {
     if (param == nullptr) {
         return ORBIS_HMD_ERROR_PARAMETER_NULL;
     }
-    LOG_INFO(Lib_Hmd, "HMD library initialized");
+    if (!Input::Vr::GetDeviceState().connected) {
+        LOG_WARNING(Lib_Hmd, "No VR device is available");
+    }
     g_library_initialized = true;
     return ORBIS_OK;
 }
