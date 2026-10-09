@@ -79,6 +79,7 @@ enum class PadMotionSource {
 struct DeviceState {
     ControllerMode controller_mode{ControllerMode::Both};
     PadMotionSource pad_motion_source{PadMotionSource::Auto};
+    bool seated_pad{};
     bool connected{};
     bool session_running{};
     bool mounted{};
@@ -106,6 +107,8 @@ struct ControllerSample {
 
 DeviceState GetDeviceState();
 void SetDeviceState(const DeviceState& state);
+std::optional<std::array<float, 3>> GetSeatedPadPosition();
+bool RecenterSeatedPad();
 bool SetControllerVibration(std::size_t hand, std::uint8_t intensity);
 std::array<std::uint8_t, 2> GetControllerVibration();
 std::vector<ControllerSample> GetControllerHistory(std::size_t hand);

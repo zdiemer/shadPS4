@@ -7,17 +7,48 @@
 #include <deque>
 #include <mutex>
 
+#include "common/logging/log.h"
+
 namespace Input::Vr {
 
 namespace {
 
 std::mutex g_mutex;
 DeviceState g_state;
+std::optional<std::array<float, 3>> g_seated_pad_position;
 std::array<std::uint8_t, 2> g_controller_vibration{};
 std::deque<std::array<ControllerSample, 2>> g_controller_history;
 std::uint64_t g_controller_sequence{};
 std::mutex g_provider_mutex;
 TrackingProvider g_provider;
+
+void UpdateSeatedPadPosition(const DeviceState& state) {
+    if (!state.session_running || !state.seated_pad) {
+        g_seated_pad_position.reset();
+        return;
+    }
+    if (g_seated_pad_position || !state.mounted || !state.position_valid ||
+        !state.orientation_valid) {
+        return;
+    }
+    const auto& q = state.head_pose.orientation;
+    const auto forward = RotateToLocal({-q[0], -q[1], -q[2], q[3]}, {0.0f, 0.0f, -1.0f});
+    const float length = std::hypot(forward[0], forward[2]);
+    if (!std::isfinite(length) || length < 0.001f) {
+        return;
+    }
+    auto position = state.head_pose.position;
+    position[0] += 0.5f * forward[0] / length;
+    position[1] -= 0.4f;
+    position[2] += 0.5f * forward[2] / length;
+    for (const auto value : position) {
+        if (!std::isfinite(value)) {
+            return;
+        }
+    }
+    g_seated_pad_position = position;
+    LOG_INFO(Input, "Seated Pad position: {}, {}, {}", position[0], position[1], position[2]);
+}
 
 } // namespace
 
@@ -28,6 +59,7 @@ DeviceState GetDeviceState() {
 
 void SetDeviceState(const DeviceState& state) {
     std::scoped_lock lock{g_mutex};
+    UpdateSeatedPadPosition(state);
     auto updated_state = state;
     for (size_t hand = 0; hand < updated_state.controllers.size(); ++hand) {
         auto& controller = updated_state.controllers[hand];
@@ -72,6 +104,23 @@ void SetDeviceState(const DeviceState& state) {
         }
     }
     g_state = updated_state;
+}
+
+std::optional<std::array<float, 3>> GetSeatedPadPosition() {
+    std::scoped_lock lock{g_mutex};
+    return g_seated_pad_position;
+}
+
+bool RecenterSeatedPad() {
+    std::scoped_lock lock{g_mutex};
+    if (!g_state.session_running || !g_state.seated_pad ||
+        g_state.controller_mode == ControllerMode::Move ||
+        g_state.pad_motion_source == PadMotionSource::VrController) {
+        return false;
+    }
+    g_seated_pad_position.reset();
+    UpdateSeatedPadPosition(g_state);
+    return true;
 }
 
 bool SetControllerVibration(std::size_t hand, std::uint8_t intensity) {

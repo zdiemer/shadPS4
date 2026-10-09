@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <mutex>
 #include <optional>
 #include <utility>
@@ -115,6 +116,8 @@ private:
     State GetStateLocked() const;
     bool receive_vr_input{};
     bool has_motion_sensors{};
+    std::optional<std::chrono::steady_clock::time_point> vr_recenter_started;
+    bool vr_recenter_held{};
     std::array<float, 4> vr_orientation_origin{0.0f, 0.0f, 0.0f, 1.0f};
     // m_state_mutex must be held by the caller.
     void PushStateLocked(u64 timestamp = 0);

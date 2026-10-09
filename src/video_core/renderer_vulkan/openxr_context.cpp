@@ -98,6 +98,7 @@ struct OpenXRContext::Impl {
     bool user_present{true};
     Input::Vr::ControllerMode controller_mode{Input::Vr::ControllerMode::Both};
     Input::Vr::PadMotionSource pad_motion_source{Input::Vr::PadMotionSource::Auto};
+    bool seated_pad{};
     std::atomic<bool> session_running{};
     struct EyeSwapchain {
         XrSwapchain handle{XR_NULL_HANDLE};
@@ -195,6 +196,13 @@ OpenXRContext::OpenXRContext() {
     }
     LOG_INFO(Render_Vulkan, "OpenXR Pad motion source: {}",
              static_cast<u32>(context->pad_motion_source));
+    if (const char* position = std::getenv("SHADPS4_VR_PAD_POSITION")) {
+        context->seated_pad = std::strcmp(position, "seated") == 0;
+        if (!context->seated_pad && std::strcmp(position, "none") != 0) {
+            LOG_WARNING(Render_Vulkan, "Unknown OpenXR Pad position mode: {}", position);
+        }
+    }
+    LOG_INFO(Render_Vulkan, "OpenXR seated Pad position: {}", context->seated_pad);
     std::vector<const char*> enabled_extensions{XR_KHR_VULKAN_ENABLE_EXTENSION_NAME};
     const bool frame_profile = std::ranges::any_of(extensions, [](const auto& extension) {
         return std::strcmp(extension.extensionName, "XR_VALVE_frame_controller_interaction") == 0;
@@ -394,6 +402,7 @@ bool OpenXRContext::CreateSession(VkInstance instance, VkPhysicalDevice physical
     }
     Input::Vr::SetDeviceState({.controller_mode = impl->controller_mode,
                                .pad_motion_source = impl->pad_motion_source,
+                               .seated_pad = impl->seated_pad,
                                .connected = true});
     if (impl->convert_time) {
         Input::Vr::SetTrackingProvider(
@@ -579,6 +588,7 @@ std::optional<Input::Vr::DeviceState> OpenXRContext::Impl::Locate(
     return Locate(xr_time, {
                                .controller_mode = snapshot.controller_mode,
                                .pad_motion_source = snapshot.pad_motion_source,
+                               .seated_pad = snapshot.seated_pad,
                                .connected = snapshot.connected,
                                .session_running = snapshot.session_running,
                                .mounted = snapshot.mounted,
@@ -677,6 +687,7 @@ std::chrono::nanoseconds OpenXRContext::Update() {
             Input::Vr::SetDeviceState({
                 .controller_mode = impl->controller_mode,
                 .pad_motion_source = impl->pad_motion_source,
+                .seated_pad = impl->seated_pad,
                 .connected = changed.state != XR_SESSION_STATE_EXITING &&
                              changed.state != XR_SESSION_STATE_LOSS_PENDING,
                 .session_running = impl->session_running,
@@ -732,6 +743,7 @@ std::chrono::nanoseconds OpenXRContext::Update() {
     Input::Vr::DeviceState state{
         .controller_mode = impl->controller_mode,
         .pad_motion_source = impl->pad_motion_source,
+        .seated_pad = impl->seated_pad,
         .connected = true,
         .session_running = true,
         .mounted = impl->user_present,
