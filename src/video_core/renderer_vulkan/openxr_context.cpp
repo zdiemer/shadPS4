@@ -699,19 +699,16 @@ std::chrono::nanoseconds OpenXRContext::Update() {
                 impl->stereo_ready = false;
             }
             LOG_INFO(Render_Vulkan, "OpenXR session state: {}", static_cast<s32>(changed.state));
-            Input::Vr::SetDeviceState({
-                .controller_mode = impl->controller_mode,
-                .pad_motion_source = impl->pad_motion_source,
-                .seated_pad = impl->seated_pad,
-                .connected = changed.state != XR_SESSION_STATE_EXITING &&
-                             changed.state != XR_SESSION_STATE_LOSS_PENDING,
-                .session_running = impl->session_running,
-                .mounted = impl->session_running && impl->user_present,
-            });
+            auto state = Input::Vr::GetDeviceState();
+            state.connected = changed.state != XR_SESSION_STATE_EXITING &&
+                              changed.state != XR_SESSION_STATE_LOSS_PENDING;
+            state.session_running = impl->session_running;
+            state.mounted = impl->session_running && impl->user_present;
+            Input::Vr::SetDeviceState(state);
         } else if (event.type == XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED) {
             const auto& changed =
                 *reinterpret_cast<const XrEventDataInteractionProfileChanged*>(&event);
-            if (changed.session == impl->session) {
+            if (changed.session == impl->session && impl->input) {
                 impl->input->LogInteractionProfiles();
             }
         } else if (event.type == XR_TYPE_EVENT_DATA_USER_PRESENCE_CHANGED_EXT &&
