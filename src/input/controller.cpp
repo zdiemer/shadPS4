@@ -228,6 +228,23 @@ void GameController::UpdateAcceleration(const float acceleration[3]) {
 void GameController::PollState() {
     std::lock_guard lock{m_state_mutex};
     PushStateLocked();
+    if (!receive_vr_input) {
+        return;
+    }
+    const auto vr = Vr::GetDeviceState();
+    const bool pressed = vr.session_running && vr.mounted && vr.seated_pad &&
+                         (std::to_underlying(GetStateLocked().buttonsState) &
+                          std::to_underlying(OrbisPadButtonDataOffset::Options)) != 0;
+    if (!pressed) {
+        vr_recenter_started.reset();
+        vr_recenter_held = false;
+    } else if (!vr_recenter_started) {
+        vr_recenter_started = std::chrono::steady_clock::now();
+    } else if (!vr_recenter_held &&
+               std::chrono::steady_clock::now() - *vr_recenter_started >= std::chrono::seconds{2}) {
+        vr_recenter_held = true;
+        Vr::RecenterSeatedPad();
+    }
 }
 
 void GameController::ResetOrientation() {

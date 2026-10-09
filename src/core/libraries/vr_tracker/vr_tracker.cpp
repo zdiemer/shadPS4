@@ -96,9 +96,11 @@ static void AdvanceCalibration() {
                       state.orientation_valid);
             break;
         case ORBIS_VR_TRACKER_DEVICE_DUALSHOCK4:
-            ready &= HasPadVrInput() && !GetPadMotionState() &&
-                     g_camera_permit == ORBIS_VR_TRACKER_DEVICE_PERMIT_ALL &&
-                     controller_ready(state.controllers[1].active ? 1 : 0, calibration);
+            ready &= g_camera_permit == ORBIS_VR_TRACKER_DEVICE_PERMIT_ALL &&
+                     (GetPadMotionState()
+                          ? Input::Vr::GetSeatedPadPosition().has_value()
+                          : HasPadVrInput() &&
+                                controller_ready(state.controllers[1].active ? 1 : 0, calibration));
             break;
         case ORBIS_VR_TRACKER_DEVICE_MOVE:
             ready &= g_camera_permit == ORBIS_VR_TRACKER_DEVICE_PERMIT_ALL;
@@ -501,7 +503,11 @@ s32 PS4_SYSV_ABI sceVrTrackerGetResult(const OrbisVrTrackerGetResultParam* param
                                      : ORBIS_VR_TRACKER_STATUS_CALIBRATING;
                 result->orientation_quality = ORBIS_VR_TRACKER_QUALITY_PARTIAL;
                 const auto& q = motion->orientation;
-                const Input::Vr::Pose pose{.orientation = {q.x, q.y, q.z, q.w}};
+                Input::Vr::Pose pose{.orientation = {q.x, q.y, q.z, q.w}};
+                if (const auto position = Input::Vr::GetSeatedPadPosition()) {
+                    pose.position = *position;
+                    result->position_quality = ORBIS_VR_TRACKER_QUALITY_PARTIAL;
+                }
                 result->pad_info.device_pose = ConvertPose(
                     pose, param->orientation_type == ORBIS_VR_TRACKER_ORIENTATION_RELATIVE,
                     g_pad_motion_relative_orientation);
@@ -785,6 +791,9 @@ s32 PS4_SYSV_ABI sceVrTrackerRecalibrate(const OrbisVrTrackerRecalibrateParam* p
         .type = param->calibration_type,
         .camera_frame = g_camera_timestamp ? std::optional{g_camera_frame} : std::nullopt,
     };
+    if (device_type == ORBIS_VR_TRACKER_DEVICE_DUALSHOCK4 && GetPadMotionState()) {
+        Input::Vr::RecenterSeatedPad();
+    }
     LOG_DEBUG(Lib_VrTracker, "Requested calibration device {}, type {}",
               static_cast<u32>(device_type), static_cast<u32>(param->calibration_type));
     return ORBIS_OK;
