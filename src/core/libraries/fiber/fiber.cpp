@@ -171,14 +171,25 @@ void PS4_SYSV_ABI _sceFiberSwitchToFiber(OrbisFiber* fiber, u64 arg_on_run_to,
 void PS4_SYSV_ABI _sceFiberSwitch(OrbisFiber* cur_fiber, OrbisFiber* fiber, u64 arg_on_run_to,
                                   OrbisFiberContext* ctx) {
     if (Core::g_fiber_hle_stack) {
-        Core::g_fiber_hle_stack = Core::RunOnHleStack(
-            [](void* arg)
-                PS4_SYSV_ABI -> void* { return GetHleStack(static_cast<OrbisFiber*>(arg)); },
-            fiber, Core::g_fiber_hle_stack);
-    } else {
-        Core::g_fiber_hle_stack = GetHleStack(fiber);
+        struct SwitchContext {
+            OrbisFiber* current;
+            OrbisFiber* next;
+            u64 arg;
+            OrbisFiberContext* context;
+        } args{cur_fiber, fiber, arg_on_run_to, ctx};
+        Core::RunOnHleStack(
+            [](void* arg) PS4_SYSV_ABI -> void* {
+                const auto& args = *static_cast<SwitchContext*>(arg);
+                Core::g_fiber_hle_stack = GetHleStack(args.next);
+                SwitchWithHleStack(args.current, args.next, args.arg, args.context);
+                __builtin_trap();
+            },
+            &args, Core::g_fiber_hle_stack);
+        __builtin_trap();
     }
-    [[clang::musttail]] return SwitchWithHleStack(cur_fiber, fiber, arg_on_run_to, ctx);
+    Core::g_fiber_hle_stack = GetHleStack(fiber);
+    SwitchWithHleStack(cur_fiber, fiber, arg_on_run_to, ctx);
+    __builtin_trap();
 }
 
 void PS4_SYSV_ABI _sceFiberTerminate(OrbisFiber* fiber, u64 arg_on_return, OrbisFiberContext* ctx) {
