@@ -198,11 +198,13 @@ Instance::Instance(Frontend::WindowSDL& window, s32 physical_device_index,
         properties = physical_device.getProperties();
         memory_properties = physical_device.getMemoryProperties();
         CollectDeviceParameters();
-        ASSERT_MSG(
-            properties.apiVersion >= TargetVulkanApiVersion,
-            "Vulkan {}.{} is required, but only {}.{} is supported by device!",
-            VK_VERSION_MAJOR(TargetVulkanApiVersion), VK_VERSION_MINOR(TargetVulkanApiVersion),
-            VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion));
+        if (properties.apiVersion < TargetVulkanApiVersion) {
+            LOG_ERROR(
+                Render_Vulkan, "Vulkan {}.{} is required, but only {}.{} is supported by device!",
+                VK_VERSION_MAJOR(TargetVulkanApiVersion), VK_VERSION_MINOR(TargetVulkanApiVersion),
+                VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion));
+            return false;
+        }
         return CreateDevice();
     };
 
@@ -304,30 +306,34 @@ bool Instance::CreateDevice() {
     };
 
     // Required
-    ASSERT_MSG(add_extension(VK_KHR_SWAPCHAIN_EXTENSION_NAME),
-               "Required Vulkan extension unavailable: {}", VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-    ASSERT_MSG(add_extension(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME),
-               "Required Vulkan extension unavailable: {}", VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
-    ASSERT_MSG(add_extension(VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME),
-               "Required Vulkan extension unavailable: {}",
-               VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
-    ASSERT_MSG(add_extension(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME),
-               "Required Vulkan extension unavailable: {}", VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
+    if (!add_extension(VK_KHR_SWAPCHAIN_EXTENSION_NAME) ||
+        !add_extension(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME) ||
+        !add_extension(VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME) ||
+        !add_extension(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME)) {
+        LOG_ERROR(Render_Vulkan, "Required Vulkan device extensions unavailable");
+        return false;
+    }
 
     if (openxr_context && openxr_context->IsAvailable()) {
         for (const auto& extension : openxr_context->GetDeviceExtensions()) {
-            ASSERT_MSG(add_extension(extension), "Required OpenXR Vulkan extension unavailable: {}",
-                       extension);
+            if (!add_extension(extension)) {
+                LOG_ERROR(Render_Vulkan, "Required OpenXR Vulkan extension unavailable: {}",
+                          extension);
+                return false;
+            }
         }
     }
 
     const auto robustness2_features = feature_chain.get<vk::PhysicalDeviceRobustness2FeaturesEXT>();
-    ASSERT_MSG(robustness2_features.robustBufferAccess2,
-               "Required Vulkan feature unavailable: robustBufferAccess2");
-    ASSERT_MSG(robustness2_features.robustImageAccess2,
-               "Required Vulkan feature unavailable: robustImageAccess2");
-    ASSERT_MSG(robustness2_features.nullDescriptor,
-               "Required Vulkan feature unavailable: nullDescriptor");
+    if (!robustness2_features.robustBufferAccess2 || !robustness2_features.robustImageAccess2 ||
+        !robustness2_features.nullDescriptor) {
+        LOG_ERROR(Render_Vulkan,
+                  "Required Vulkan features unavailable: robustBufferAccess2={}, "
+                  "robustImageAccess2={}, nullDescriptor={}",
+                  robustness2_features.robustBufferAccess2, robustness2_features.robustImageAccess2,
+                  robustness2_features.nullDescriptor);
+        return false;
+    }
 
     // Optional
     maintenance_5 = add_extension(VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
