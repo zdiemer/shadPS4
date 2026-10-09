@@ -32,6 +32,29 @@ constexpr static bool Is32BppPixelFormat(PixelFormat format) {
     }
 }
 
+static int ValidatePixelFormat(const BufferAttribute* attribute) {
+    const bool is_ycbcr = attribute->pixel_format == PixelFormat::Ycbcr420Bt709;
+    if (!Is32BppPixelFormat(attribute->pixel_format) && !is_ycbcr) {
+        LOG_ERROR(Lib_VideoOut,
+                  "Unsupported pixel format = {:#x}, width = {}, height = {}, pitch = {}, "
+                  "tiling = {}",
+                  static_cast<u32>(attribute->pixel_format), attribute->width, attribute->height,
+                  attribute->pitch_in_pixel, static_cast<s32>(attribute->tiling_mode));
+        return ORBIS_VIDEO_OUT_ERROR_INVALID_PIXEL_FORMAT;
+    }
+    if (is_ycbcr && attribute->tiling_mode != TilingMode::Linear) {
+        return ORBIS_VIDEO_OUT_ERROR_INVALID_TILING_MODE;
+    }
+    if (is_ycbcr && (attribute->width == 0 || attribute->height == 0 ||
+                     (attribute->width | attribute->height) % 2 != 0)) {
+        return ORBIS_VIDEO_OUT_ERROR_INVALID_RESOLUTION;
+    }
+    if (is_ycbcr && attribute->pitch_in_pixel % 64 != 0) {
+        return ORBIS_VIDEO_OUT_ERROR_INVALID_PITCH;
+    }
+    return ORBIS_OK;
+}
+
 constexpr u32 PixelFormatBpp(PixelFormat pixel_format) {
     switch (pixel_format) {
     case PixelFormat::A16R16G16B16Float:
@@ -149,24 +172,8 @@ VideoOutPort* VideoOutDriver::GetPort(int handle) {
 
 int VideoOutDriver::RegisterBuffers(VideoOutPort* port, s32 startIndex, void* const* addresses,
                                     s32 bufferNum, const BufferAttribute* attribute) {
-    const bool is_ycbcr = attribute->pixel_format == PixelFormat::Ycbcr420Bt709;
-    if (!Is32BppPixelFormat(attribute->pixel_format) && !is_ycbcr) {
-        LOG_ERROR(Lib_VideoOut,
-                  "Unsupported pixel format = {:#x}, width = {}, height = {}, pitch = {}, "
-                  "tiling = {}",
-                  static_cast<u32>(attribute->pixel_format), attribute->width, attribute->height,
-                  attribute->pitch_in_pixel, static_cast<s32>(attribute->tiling_mode));
-        return ORBIS_VIDEO_OUT_ERROR_INVALID_PIXEL_FORMAT;
-    }
-    if (is_ycbcr && attribute->tiling_mode != TilingMode::Linear) {
-        return ORBIS_VIDEO_OUT_ERROR_INVALID_TILING_MODE;
-    }
-    if (is_ycbcr && (attribute->width == 0 || attribute->height == 0 ||
-                     (attribute->width | attribute->height) % 2 != 0)) {
-        return ORBIS_VIDEO_OUT_ERROR_INVALID_RESOLUTION;
-    }
-    if (is_ycbcr && attribute->pitch_in_pixel % 64 != 0) {
-        return ORBIS_VIDEO_OUT_ERROR_INVALID_PITCH;
+    if (const auto result = ValidatePixelFormat(attribute); result != ORBIS_OK) {
+        return result;
     }
     const s32 group_index = port->FindFreeGroup();
     if (group_index >= MaxDisplayBufferGroups) {
@@ -238,7 +245,8 @@ int VideoOutDriver::RegisterBuffers(VideoOutPort* port, s32 startIndex, void* co
 }
 
 int VideoOutDriver::UnregisterBuffers(VideoOutPort* port, s32 attributeIndex) {
-    if (attributeIndex >= MaxDisplayBufferGroups || !port->groups[attributeIndex].is_occupied) {
+    if (attributeIndex < 0 || attributeIndex >= MaxDisplayBufferGroups ||
+        !port->groups[attributeIndex].is_occupied) {
         LOG_ERROR(Lib_VideoOut, "Invalid attribute index {}", attributeIndex);
         return ORBIS_VIDEO_OUT_ERROR_INVALID_VALUE;
     }
@@ -258,9 +266,14 @@ int VideoOutDriver::UnregisterBuffers(VideoOutPort* port, s32 attributeIndex) {
 
 int VideoOutDriver::ChangeBufferAttribute(VideoOutPort* port, s32 attributeIndex,
                                           const BufferAttribute* attribute) {
-    if (attributeIndex >= MaxDisplayBufferGroups || !port->groups[attributeIndex].is_occupied) {
+    if (attributeIndex < 0 || attributeIndex >= MaxDisplayBufferGroups ||
+        !port->groups[attributeIndex].is_occupied) {
         LOG_ERROR(Lib_VideoOut, "Invalid attribute index {}", attributeIndex);
         return ORBIS_VIDEO_OUT_ERROR_INVALID_VALUE;
+    }
+
+    if (const auto result = ValidatePixelFormat(attribute); result != ORBIS_OK) {
+        return result;
     }
 
     if (attribute->reserved0 != 0 || attribute->reserved1 != 0) {
