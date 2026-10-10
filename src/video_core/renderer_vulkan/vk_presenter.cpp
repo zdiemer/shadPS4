@@ -881,7 +881,9 @@ static std::array<Input::Vr::FieldOfView, 2> GetVrLayerFieldOfView(
     const VideoCore::VrLayer& layer) {
     auto fovs = Input::Vr::GetRenderFieldOfView();
     const std::array transforms{GetVrUvTransform(layer, 0), GetVrUvTransform(layer, 1)};
-    const bool shared_image = layer.images[0].Address() == layer.images[1].Address();
+    const bool shared_image = layer.images[0].Address() == layer.images[1].Address() &&
+                              layer.images[0].base_array == layer.images[1].base_array &&
+                              layer.images[0].base_level == layer.images[1].base_level;
     const float horizontal = transforms[1][2] - transforms[0][2];
     const float vertical = transforms[1][3] - transforms[0][3];
     for (size_t eye = 0; eye < fovs.size(); ++eye) {
