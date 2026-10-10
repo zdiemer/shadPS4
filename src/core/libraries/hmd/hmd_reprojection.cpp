@@ -53,8 +53,7 @@ s32 SetUserEvent(std::optional<UserEvent>& event, Kernel::OrbisKernelEqueue queu
     if (event) {
         return ORBIS_HMD_ERROR_REPROJECTION_RESOURCE_ALREADY_SET;
     }
-    auto* equeue = Kernel::GetEqueue(queue);
-    if (!equeue || !equeue->EventExists(id, Kernel::OrbisKernelEvent::Filter::User)) {
+    if (!Kernel::GetEqueue(queue)) {
         return ORBIS_HMD_ERROR_PARAMETER_INVALID;
     }
     event = UserEvent{queue, id};
