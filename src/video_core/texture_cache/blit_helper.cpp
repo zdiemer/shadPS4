@@ -149,7 +149,7 @@ void BlitHelper::ReinterpretColorAsMsDepth(u32 width, u32 height, u32 num_sample
 
 void BlitHelper::CopyBetweenMsImages(u32 width, u32 height, u32 num_samples,
                                      vk::Format pixel_format, bool src_msaa, vk::Image source,
-                                     vk::Image dest) {
+                                     vk::Image dest, u32 array_layer) {
     const vk::ImageViewUsageCreateInfo src_usage_ci{.usage = vk::ImageUsageFlagBits::eSampled};
     const vk::ImageViewCreateInfo src_view_ci = {
         .pNext = &src_usage_ci,
@@ -160,7 +160,7 @@ void BlitHelper::CopyBetweenMsImages(u32 width, u32 height, u32 num_samples,
             .aspectMask = vk::ImageAspectFlagBits::eColor,
             .baseMipLevel = 0U,
             .levelCount = 1U,
-            .baseArrayLayer = 0U,
+            .baseArrayLayer = array_layer,
             .layerCount = 1U,
         },
     };
@@ -179,7 +179,7 @@ void BlitHelper::CopyBetweenMsImages(u32 width, u32 height, u32 num_samples,
             .aspectMask = vk::ImageAspectFlagBits::eColor,
             .baseMipLevel = 0U,
             .levelCount = 1U,
-            .baseArrayLayer = 0U,
+            .baseArrayLayer = array_layer,
             .layerCount = 1U,
         },
     };

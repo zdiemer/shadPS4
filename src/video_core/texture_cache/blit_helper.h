@@ -29,7 +29,7 @@ public:
                                    vk::Image source, vk::Image dest);
 
     void CopyBetweenMsImages(u32 width, u32 height, u32 num_samples, vk::Format pixel_format,
-                             bool src_msaa, vk::Image source, vk::Image dest);
+                             bool src_msaa, vk::Image source, vk::Image dest, u32 array_layer);
 
 private:
     void CreateShaders();

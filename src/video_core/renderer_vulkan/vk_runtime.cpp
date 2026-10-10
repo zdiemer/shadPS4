@@ -633,7 +633,7 @@ void Runtime::SetBackingSamples(VideoCore::Image* image, u32 num_samples, bool c
 
     if (copy_backing) {
         scheduler.EndRendering();
-        ASSERT(image->info.resources.levels == 1 && image->info.resources.layers == 1);
+        ASSERT(image->info.resources.levels == 1);
 
         // Transition current backing to shader read layout
         Transit(image, vk::ImageLayout::eShaderReadOnlyOptimal,
@@ -665,9 +665,11 @@ void Runtime::SetBackingSamples(VideoCore::Image* image, u32 num_samples, bool c
         FlushBarriers();
 
         // Copy between ms and non ms backing images
-        blit_helper->CopyBetweenMsImages(
-            info.size.width, info.size.height, new_backing->num_samples, info.pixel_format,
-            backing->num_samples > 1, backing->image, new_backing->image);
+        for (u32 layer = 0; layer < info.resources.layers; ++layer) {
+            blit_helper->CopyBetweenMsImages(
+                info.size.width, info.size.height, new_backing->num_samples, info.pixel_format,
+                backing->num_samples > 1, backing->image, new_backing->image, layer);
+        }
 
         // Update current layout in tracker to new backings layout
         new_backing->state.layout = dst_layout;
