@@ -411,6 +411,9 @@ s32 PS4_SYSV_ABI sceHmdReprojectionSetDisplayBuffers(s32 handle, s32 start, s32 
     if (!VideoOut::GetReprojectionTarget(handle, start, count, target)) {
         return ORBIS_HMD_ERROR_HANDLE_INVALID;
     }
+    if (g_buffers_set && presenter) {
+        presenter->StopVr();
+    }
     g_buffers_set = true;
     g_display_handle = handle;
     g_display_target = target;

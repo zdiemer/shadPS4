@@ -113,6 +113,7 @@ void VideoOutDriver::Close(s32 handle) {
     // Mark as closed
     port->is_open = false;
     ++port->generation;
+    reprojection_scanouts[handle - 1].reset();
     liverpool->SetVoPort(nullptr, handle - 1);
     auto& queue = requests[handle - 1];
     while (!queue.empty()) {
@@ -323,7 +324,9 @@ void VideoOutDriver::Flip(const Request& req) {
         if (req.eop) {
             --flip_status.gc_queue_num;
         }
-        --flip_status.flip_pending_num;
+        if (req.pending) {
+            --flip_status.flip_pending_num;
+        }
     }
 
     // Trigger flip events for the port.
@@ -414,21 +417,27 @@ bool VideoOutDriver::SubmitReprojectionFlip(const VideoCore::VrDisplayTarget& ta
         target.count > MaxDisplayBuffers - target.start) {
         return false;
     }
-    const s32 index = target.start + frame_number % target.count;
-    std::scoped_lock status_lock{port->port_mutex};
-    if (port->buffer_slots[index].group_index < 0 ||
-        port->flip_status.flip_pending_num >= MaxDisplayBuffers) {
-        return false;
+    for (s32 i = 0; i < target.count; ++i) {
+        if (port->buffer_slots[target.start + i].group_index < 0) {
+            return false;
+        }
     }
-    ++port->flip_status.flip_pending_num;
+    auto& scanout = reprojection_scanouts[target.handle - 1];
+    if (!scanout || scanout->start != target.start || scanout->count != target.count) {
+        scanout = ReprojectionScanout{target.start, target.count, frame_number};
+    } else {
+        scanout->frame_number = frame_number;
+    }
+    std::scoped_lock status_lock{port->port_mutex};
     port->flip_status.submit_tsc = Kernel::sceKernelReadTsc();
-    requests[target.handle - 1].push({.frame = nullptr,
-                                      .port = port,
-                                      .flip_arg = static_cast<s64>(frame_number),
-                                      .index = index,
-                                      .eop = false,
-                                      .generation = target.generation});
     return true;
+}
+
+void VideoOutDriver::StopReprojection() {
+    std::scoped_lock lock{mutex};
+    for (auto& scanout : reprojection_scanouts) {
+        scanout.reset();
+    }
 }
 
 void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_arg, bool is_eop,
@@ -605,6 +614,20 @@ void VideoOutDriver::VblankThread(VideoOutPort* port, std::stop_token token) {
                     Flip(request);
                     if (request.frame) {
                         present_requests.push(request);
+                    }
+                } else if (auto& scanout = reprojection_scanouts[handle - 1]; scanout) {
+                    const s32 index = scanout->start + scanout->buffer_index;
+                    if (port->buffer_slots[index].group_index < 0) {
+                        scanout.reset();
+                    } else {
+                        Flip({.frame = nullptr,
+                              .port = port,
+                              .flip_arg = static_cast<s64>(scanout->frame_number),
+                              .index = index,
+                              .eop = false,
+                              .generation = port->generation,
+                              .pending = false});
+                        scanout->buffer_index = (scanout->buffer_index + 1) % scanout->count;
                     }
                 }
                 {

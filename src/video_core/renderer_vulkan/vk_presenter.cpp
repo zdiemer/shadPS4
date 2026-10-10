@@ -1101,7 +1101,10 @@ void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
 }
 
 void Presenter::StopVr() {
-    liverpool->SubmitGfxCallback([this] { openxr->ClearStereo(); });
+    liverpool->SubmitGfxCallback([this] {
+        Libraries::VideoOut::StopReprojection();
+        openxr->ClearStereo();
+    });
 }
 
 Frame* Presenter::PrepareBlankFrame(bool present_thread) {

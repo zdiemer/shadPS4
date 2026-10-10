@@ -28,6 +28,12 @@ bool SubmitReprojectionFlip(const VideoCore::VrDisplayTarget& target, u64 frame_
     return driver && driver->SubmitReprojectionFlip(target, frame_number);
 }
 
+void StopReprojection() {
+    if (driver) {
+        driver->StopReprojection();
+    }
+}
+
 void PS4_SYSV_ABI sceVideoOutSetBufferAttribute(BufferAttribute* attribute, PixelFormat pixelFormat,
                                                 u32 tilingMode, u32 aspectRatio, u32 width,
                                                 u32 height, u32 pitchInPixel) {

@@ -11,6 +11,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
+#include <optional>
 #include <queue>
 
 namespace Vulkan {
@@ -103,6 +104,7 @@ public:
     bool GetReprojectionTarget(s32 handle, s32 start, s32 count,
                                VideoCore::VrDisplayTarget& target);
     bool SubmitReprojectionFlip(const VideoCore::VrDisplayTarget& target, u64 frame_number);
+    void StopReprojection();
 
 private:
     struct Request {
@@ -112,10 +114,18 @@ private:
         s32 index;
         bool eop;
         u64 generation;
+        bool pending = true;
 
         operator bool() const noexcept {
             return frame != nullptr;
         }
+    };
+
+    struct ReprojectionScanout {
+        s32 start;
+        s32 count;
+        u64 frame_number;
+        u32 buffer_index{};
     };
 
     void Flip(const Request& req);
@@ -133,6 +143,7 @@ private:
     VideoOutPort social_port{};
     std::jthread present_thread;
     std::array<std::queue<Request>, 2> requests;
+    std::array<std::optional<ReprojectionScanout>, 2> reprojection_scanouts;
     std::queue<Request> present_requests;
     std::array<std::jthread, 2> vblank_threads;
 };

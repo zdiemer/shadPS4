@@ -146,6 +146,7 @@ s32 PS4_SYSV_ABI sceVideoOutAdjustColor(s32 handle, const SceVideoOutColorSettin
 // Internal system functions
 bool GetReprojectionTarget(s32 handle, s32 start, s32 count, VideoCore::VrDisplayTarget& target);
 bool SubmitReprojectionFlip(const VideoCore::VrDisplayTarget& target, u64 frame_number);
+void StopReprojection();
 s32 sceVideoOutSubmitEopFlip(s32 handle, u32 buf_id, u32 mode, s64 flip_arg, void** unk);
 
 void RegisterLib(Core::Loader::SymbolsResolver* sym);
