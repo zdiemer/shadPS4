@@ -68,7 +68,7 @@ static void DumpSrtProgram(const Shader::Info& info, const u8* code, size_t code
     }
 }
 
-static bool SrtWalkerSignalHandler(void* context, void* fault_address) {
+static bool SrtWalkerSignalHandler(void* context, void*) {
     // Only handle if the fault address is within the SRT code range
     const u8* code_start = g_srt_codegen_start;
     const u8* code_end = code_start + g_srt_codegen.getSize();
@@ -77,7 +77,6 @@ static bool SrtWalkerSignalHandler(void* context, void* fault_address) {
         return false; // Not in SRT code range
     }
 
-    // Patch instruction to zero register
     ZydisDecodedInstruction instruction;
     ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
     ZyanStatus status = Common::Decoder::Instance()->decodeInstruction(instruction, operands,
@@ -87,35 +86,16 @@ static bool SrtWalkerSignalHandler(void* context, void* fault_address) {
            operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
            operands[1].type == ZYDIS_OPERAND_TYPE_MEMORY);
 
-    size_t len = instruction.length;
-    const size_t patch_size = 3;
-    u8* code_patch = const_cast<u8*>(reinterpret_cast<const u8*>(code));
-
-    // We can only encounter rdi or r10d as the first operand in a
-    // fault memory access for SRT walker.
     switch (operands[0].reg.value) {
     case ZYDIS_REGISTER_RDI:
-        // mov rdi, [rdi + (off_dw << 2)] -> xor rdi, rdi
-        code_patch[0] = 0x48;
-        code_patch[1] = 0x31;
-        code_patch[2] = 0xFF;
-        break;
     case ZYDIS_REGISTER_R10D:
-        // mov r10d, [rdi + (off_dw << 2)] -> xor r10d, r10d
-        code_patch[0] = 0x45;
-        code_patch[1] = 0x31;
-        code_patch[2] = 0xD2;
+        Common::SetX64Register(context, ZydisRegisterGetId(operands[0].reg.value), 0);
+        Common::IncrementRip(context, instruction.length);
         break;
     default:
         UNREACHABLE_MSG("Unsupported register for SRT walker patch");
         return false;
     }
-
-    // Fill nops
-    memset(code_patch + patch_size, 0x90, len - patch_size);
-
-    LOG_WARNING(Render_Recompiler, "Patched SRT walker at {}, fault address {}", code,
-                fault_address);
 
     return true;
 }
@@ -597,6 +577,10 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
         LOG_ERROR(Render_Recompiler, "Failed to compute offset for SRT walker");
         return;
     }
+    const auto first_offset = pass_info.dst_off_dw;
+    Xbyak::Label missing_pointer, done;
+    c.test(rdi, rdi);
+    c.jz(missing_pointer, Xbyak::CodeGenerator::T_NEAR);
     PassInfo::PtrUserList* use_list = pass_info.GetUsesAsPointer(subtree);
     ASSERT(use_list);
 
@@ -630,6 +614,14 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
         }
     }
 
+    c.jmp(done, Xbyak::CodeGenerator::T_NEAR);
+    c.L(missing_pointer);
+    c.lea(rdi, ptr[rsi + (first_offset << 2)]);
+    c.mov(ecx, pass_info.dst_off_dw - first_offset);
+    c.xor_(eax, eax);
+    c.rep();
+    c.stosd();
+    c.L(done);
     PopPtr(c);
 }
 

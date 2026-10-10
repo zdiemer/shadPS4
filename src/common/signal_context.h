@@ -13,6 +13,8 @@ void* GetRip(void* ctx);
 
 void IncrementRip(void* ctx, u64 length);
 
+void SetX64Register(void* ctx, u8 index, u64 value);
+
 bool IsWriteError(void* ctx);
 bool IsExecuteError(void* ctx);
 
