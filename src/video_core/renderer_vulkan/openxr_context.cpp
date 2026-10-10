@@ -805,6 +805,9 @@ void OpenXRContext::Impl::AnchorTrackingSpace(XrTime time) {
     constexpr auto valid =
         XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT;
     if (!camera_aligned) {
+        if (user_presence_supported && !user_present) {
+            return;
+        }
         XrSpaceLocation head{XR_TYPE_SPACE_LOCATION};
         const auto result = xrLocateSpace(view_space, local_space, time, &head);
         CheckResult(result);
