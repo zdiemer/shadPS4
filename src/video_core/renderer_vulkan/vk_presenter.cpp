@@ -868,10 +868,18 @@ static void ReleaseVrLabels(const VideoCore::VrFrame& frame) {
     }
 }
 
+static std::array<float, 4> GetVrUvTransform(const VideoCore::VrLayer& layer, size_t eye) {
+    auto uv = layer.uv_transform[eye];
+    if (uv[1] < 0.0f) {
+        uv[3] = 1.0f - uv[3];
+    }
+    return uv;
+}
+
 static std::array<Input::Vr::FieldOfView, 2> GetVrLayerFieldOfView(
     const VideoCore::VrLayer& layer) {
     auto fovs = Input::Vr::GetRenderFieldOfView();
-    const auto& transforms = layer.uv_transform;
+    const std::array transforms{GetVrUvTransform(layer, 0), GetVrUvTransform(layer, 1)};
     const bool shared_image = layer.images[0].Address() == layer.images[1].Address();
     const float horizontal = transforms[1][2] - transforms[0][2];
     const float vertical = transforms[1][3] - transforms[0][3];
@@ -1021,7 +1029,8 @@ void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
                             cmdbuf.pipelineBarrier2(
                                 {.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier});
                         }
-                        const auto& uv = layers[layer]->uv_transform[eye];
+                        const auto uv = frame.head_locked ? layers[layer]->uv_transform[eye]
+                                                          : GetVrUvTransform(*layers[layer], eye);
                         const std::array bounds =
                             frame.head_locked
                                 ? std::array{uv[2], uv[3] + uv[1], uv[2] + uv[0], uv[3]}
