@@ -116,7 +116,7 @@ struct OrbisHmdReprojectionLayer {
     float left_depth_uv[4];
     float right_depth_uv[4];
     u64 reserved;
-    const void* projection;
+    const float (*scanout_orientations)[4];
     u32 flags;
     u32 reserved1[11];
 };

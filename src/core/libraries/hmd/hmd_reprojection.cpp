@@ -6,6 +6,7 @@
 #include <cstring>
 #include <mutex>
 #include <optional>
+#include <span>
 #include "common/logging/log.h"
 #include "core/libraries/error_codes.h"
 #include "core/libraries/hmd/hmd.h"
@@ -117,6 +118,35 @@ s32 ReadSampler(const void* pointer, AmdGpu::Sampler& sampler) {
         return ORBIS_HMD_ERROR_UNSUPPORTED_FEATURE;
     }
     return ORBIS_OK;
+}
+
+s32 ValidateScanoutOrientations(const float (*orientations)[4],
+                                const Input::Vr::Pose& render_pose) {
+    if (orientations == nullptr) {
+        return ORBIS_OK;
+    }
+    if (!Core::Memory::Instance()->IsValidMapping(reinterpret_cast<VAddr>(orientations),
+                                                  sizeof(float) * 8)) {
+        return ORBIS_HMD_ERROR_PARAMETER_INVALID;
+    }
+    std::array<std::array<float, 4>, 2> normalized{};
+    for (size_t i = 0; i < normalized.size(); ++i) {
+        float norm{};
+        for (const float value : std::span{orientations[i], 4}) {
+            norm += value * value;
+        }
+        if (!std::isfinite(norm) || norm < 0.000001f) {
+            return ORBIS_HMD_ERROR_PARAMETER_INVALID;
+        }
+        for (size_t axis = 0; axis < normalized[i].size(); ++axis) {
+            normalized[i][axis] = orientations[i][axis] / std::sqrt(norm);
+        }
+    }
+    float alignment{};
+    for (size_t axis = 0; axis < render_pose.orientation.size(); ++axis) {
+        alignment += normalized[0][axis] * render_pose.orientation[axis];
+    }
+    return std::abs(alignment) >= 0.99999f ? ORBIS_OK : ORBIS_HMD_ERROR_UNSUPPORTED_FEATURE;
 }
 
 s32 SubmitReprojection(const OrbisHmdReprojectionRenderParam* param,
@@ -254,9 +284,13 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStartMultilayer(const OrbisHmdReprojectionLay
     const std::array destinations{&frame.scene, frame.overlay ? &*frame.overlay : nullptr};
     for (u32 i = 0; i < count; ++i) {
         const auto& source = layers[i];
-        if (source.left_depth || source.right_depth || source.projection ||
-            source.flags != (i == 0 ? 0u : 2u)) {
+        if (source.left_depth || source.right_depth || source.flags != (i == 0 ? 0u : 2u)) {
             return ORBIS_HMD_ERROR_UNSUPPORTED_FEATURE;
+        }
+        if (const s32 result =
+                ValidateScanoutOrientations(source.scanout_orientations, frame.head_pose);
+            result != ORBIS_OK) {
+            return result;
         }
         AmdGpu::Sampler sampler{};
         if (const s32 result = ReadSampler(source.sampler, sampler); result != ORBIS_OK) {
