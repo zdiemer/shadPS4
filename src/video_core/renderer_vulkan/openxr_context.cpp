@@ -95,6 +95,7 @@ struct OpenXRContext::Impl {
     XrSession session{XR_NULL_HANDLE};
     XrSpace local_space{XR_NULL_HANDLE};
     XrSpace stage_space{XR_NULL_HANDLE};
+    bool camera_aligned{};
     XrReferenceSpaceType tracking_reference_type{XR_REFERENCE_SPACE_TYPE_LOCAL};
     struct TrackingSpace {
         XrSpace handle{XR_NULL_HANDLE};
@@ -200,6 +201,7 @@ void OpenXRContext::Impl::DestroySession() {
     local_space = XR_NULL_HANDLE;
     stage_space = XR_NULL_HANDLE;
     tracking_reference_type = XR_REFERENCE_SPACE_TYPE_LOCAL;
+    camera_aligned = false;
     view_space = XR_NULL_HANDLE;
     session_state = XR_SESSION_STATE_UNKNOWN;
     session_running = false;
@@ -740,6 +742,9 @@ XrSpace OpenXRContext::Impl::GetTrackingSpace(XrTime time) const {
 
 Input::Vr::DeviceState OpenXRContext::Impl::Locate(XrTime time, Input::Vr::DeviceState state) {
     UpdateReferenceSpace(time);
+    if (!camera_aligned) {
+        return state;
+    }
     const auto tracking_space = GetTrackingSpace(time);
     if (input) {
         input->Locate(tracking_space, time, state);
@@ -797,14 +802,43 @@ Input::Vr::DeviceState OpenXRContext::Impl::Locate(XrTime time, Input::Vr::Devic
 }
 
 void OpenXRContext::Impl::AnchorTrackingSpace(XrTime time) {
+    constexpr auto valid =
+        XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT;
+    if (!camera_aligned) {
+        XrSpaceLocation head{XR_TYPE_SPACE_LOCATION};
+        const auto result = xrLocateSpace(view_space, local_space, time, &head);
+        CheckResult(result);
+        if (XR_FAILED(result) || (head.locationFlags & valid) != valid) {
+            return;
+        }
+        auto origin = tracking_spaces.back().origin;
+        const float distance = -origin.position.z;
+        origin.position = {origin.position.x + head.pose.position.x,
+                           origin.position.y + head.pose.position.y,
+                           origin.position.z + head.pose.position.z - distance};
+        XrReferenceSpaceCreateInfo info{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+        info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+        info.poseInReferenceSpace = origin;
+        XrSpace space{XR_NULL_HANDLE};
+        const auto create_result = xrCreateReferenceSpace(session, &info, &space);
+        CheckResult(create_result);
+        if (XR_FAILED(create_result)) {
+            return;
+        }
+        tracking_spaces.push_back({space, 0, origin});
+        local_space = space;
+        camera_aligned = true;
+        while (!reference_changes.empty() && reference_changes.front().changeTime <= time) {
+            reference_changes.pop_front();
+        }
+        LOG_INFO(Render_Vulkan, "OpenXR virtual camera aligned to the initial headset position");
+    }
     if (stage_space == XR_NULL_HANDLE || tracking_reference_type != XR_REFERENCE_SPACE_TYPE_LOCAL) {
         return;
     }
     XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
     const auto result = xrLocateSpace(local_space, stage_space, time, &location);
     CheckResult(result);
-    constexpr auto valid =
-        XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT;
     if (XR_FAILED(result) || (location.locationFlags & valid) != valid) {
         return;
     }
@@ -817,7 +851,7 @@ void OpenXRContext::Impl::AnchorTrackingSpace(XrTime time) {
     if (XR_FAILED(create_result)) {
         return;
     }
-    tracking_spaces.push_back({space, time, location.pose});
+    tracking_spaces.push_back({space, 0, location.pose});
     local_space = space;
     tracking_reference_type = XR_REFERENCE_SPACE_TYPE_STAGE;
     reference_changes.clear();
