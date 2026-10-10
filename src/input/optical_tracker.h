@@ -30,6 +30,9 @@ private:
     std::optional<std::array<float, 3>> cached_position;
     std::optional<std::array<float, 3>> tracked_position;
     std::chrono::steady_clock::time_point tracked_time{};
+    u64 tracked_timestamp_ns{};
+    std::optional<std::array<float, 3>> filtered_position;
+    std::array<float, 3> filtered_velocity{};
     std::optional<std::array<float, 3>> pending_position;
     std::chrono::steady_clock::time_point pending_time{};
     unsigned pending_frames{};

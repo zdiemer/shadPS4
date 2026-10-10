@@ -8,6 +8,7 @@
 #include <fstream>
 #include <functional>
 #include <limits>
+#include <numbers>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -180,6 +181,8 @@ bool OpticalTracker::LoadCalibration(const std::filesystem::path& path) {
     cached_sequence = 0;
     cached_position.reset();
     tracked_position.reset();
+    filtered_position.reset();
+    filtered_velocity = {};
     pending_position.reset();
     pending_frames = 0;
     std::ifstream input{path};
@@ -240,6 +243,8 @@ std::optional<std::array<float, 3>> OpticalTracker::Locate(const StereoCameraFra
     }
     if (colour != cached_colour) {
         tracked_position.reset();
+        filtered_position.reset();
+        filtered_velocity = {};
         pending_position.reset();
         pending_frames = 0;
     }
@@ -345,8 +350,39 @@ std::optional<std::array<float, 3>> OpticalTracker::Locate(const StereoCameraFra
             return std::nullopt;
         }
     }
-    tracked_position = cached_position;
+    const auto measured_position = *cached_position;
+    const double interval = tracked_timestamp_ns != 0 && frame.timestamp_ns > tracked_timestamp_ns
+                                ? (frame.timestamp_ns - tracked_timestamp_ns) * 1e-9
+                                : elapsed;
+    if (continuous && interval > 0 && interval <= 0.1 && filtered_position) {
+        const auto weight = [interval](double cutoff) {
+            const double frequency = 2.0 * std::numbers::pi * cutoff * interval;
+            return static_cast<float>(frequency / (1.0 + frequency));
+        };
+        constexpr double VelocityCutoff = 1.0;
+        const float velocity_weight = weight(VelocityCutoff);
+        for (size_t axis = 0; axis < 3; ++axis) {
+            const float velocity = (measured_position[axis] - tracked_position->at(axis)) /
+                                   static_cast<float>(interval);
+            filtered_velocity[axis] += velocity_weight * (velocity - filtered_velocity[axis]);
+        }
+        const float speed =
+            std::hypot(filtered_velocity[0], filtered_velocity[1], filtered_velocity[2]);
+        constexpr double MinimumPositionCutoff = 1.5;
+        constexpr double MotionResponse = 12.0;
+        const float position_weight = weight(MinimumPositionCutoff + MotionResponse * speed);
+        for (size_t axis = 0; axis < 3; ++axis) {
+            filtered_position->at(axis) +=
+                position_weight * (measured_position[axis] - filtered_position->at(axis));
+        }
+    } else {
+        filtered_position = measured_position;
+        filtered_velocity = {};
+    }
+    cached_position = filtered_position;
+    tracked_position = measured_position;
     tracked_time = frame.sample_time;
+    tracked_timestamp_ns = frame.timestamp_ns;
     pending_position.reset();
     pending_frames = 0;
     return cached_position;
