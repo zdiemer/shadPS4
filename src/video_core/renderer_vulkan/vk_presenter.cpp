@@ -12,6 +12,7 @@
 #include "core/devtools/layer.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/system/systemservice.h"
+#include "core/libraries/videoout/video_out.h"
 #include "core/memory.h"
 #include "imgui/friends_layer.h"
 #include "imgui/invitation_prompt_layer.h"
@@ -929,6 +930,10 @@ void Presenter::SubmitVrFrame(VideoCore::VrFrame frame) {
                     draw_scheduler.Finish();
                 }
                 ReleaseVrLabels(frame);
+            }
+            if (images_consumed && frame.display_target) {
+                Libraries::VideoOut::SubmitReprojectionFlip(*frame.display_target,
+                                                            frame.frame_number);
             }
             vr_frame_pending = false;
         };

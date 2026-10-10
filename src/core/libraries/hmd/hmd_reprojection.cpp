@@ -28,6 +28,7 @@ std::mutex g_reprojection_mutex;
 bool g_initialized{};
 bool g_buffers_set{};
 s32 g_display_handle{};
+std::optional<VideoCore::VrDisplayTarget> g_display_target;
 
 struct UserEvent {
     Kernel::OrbisKernelEqueue queue{};
@@ -44,6 +45,7 @@ void ResetReprojectionState() {
     g_initialized = false;
     g_buffers_set = false;
     g_display_handle = 0;
+    g_display_target.reset();
     g_start_event.reset();
     g_end_event.reset();
 }
@@ -204,6 +206,7 @@ s32 SubmitReprojection(const OrbisHmdReprojectionRenderParam* param,
             return ORBIS_HMD_ERROR_PARAMETER_INVALID;
         }
     }
+    frame.display_target = g_display_target;
     presenter->SubmitVrFrame(frame);
     return ORBIS_OK;
 }
@@ -310,6 +313,7 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStartMultilayer(const OrbisHmdReprojectionLay
         }
         destination.sampler = sampler;
     }
+    frame.display_target = g_display_target;
     presenter->SubmitVrFrame(frame);
     return ORBIS_OK;
 }
@@ -403,12 +407,13 @@ s32 PS4_SYSV_ABI sceHmdReprojectionSetDisplayBuffers(s32 handle, s32 start, s32 
         count > VideoOut::MaxDisplayBuffers - start || flags != 0) {
         return ORBIS_HMD_ERROR_PARAMETER_INVALID;
     }
-    uintptr_t labels{};
-    if (VideoOut::sceVideoOutGetBufferLabelAddress(handle, &labels) < 0) {
+    VideoCore::VrDisplayTarget target{};
+    if (!VideoOut::GetReprojectionTarget(handle, start, count, target)) {
         return ORBIS_HMD_ERROR_HANDLE_INVALID;
     }
     g_buffers_set = true;
     g_display_handle = handle;
+    g_display_target = target;
     return ORBIS_OK;
 }
 
@@ -467,6 +472,7 @@ s32 PS4_SYSV_ABI sceHmdReprojectionStart2dVr(const OrbisHmdReprojectionRenderPar
         return ORBIS_HMD_ERROR_PARAMETER_INVALID;
     }
     frame.scene.sampler = sampler;
+    frame.display_target = g_display_target;
     presenter->SubmitVrFrame(frame);
     return ORBIS_OK;
 }
@@ -543,6 +549,7 @@ s32 PS4_SYSV_ABI sceHmdReprojectionUnsetDisplayBuffers() {
     }
     g_buffers_set = false;
     g_display_handle = 0;
+    g_display_target.reset();
     return ORBIS_OK;
 }
 

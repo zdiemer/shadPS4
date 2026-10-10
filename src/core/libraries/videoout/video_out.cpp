@@ -20,6 +20,14 @@ namespace Libraries::VideoOut {
 
 static std::unique_ptr<VideoOutDriver> driver;
 
+bool GetReprojectionTarget(s32 handle, s32 start, s32 count, VideoCore::VrDisplayTarget& target) {
+    return driver && driver->GetReprojectionTarget(handle, start, count, target);
+}
+
+bool SubmitReprojectionFlip(const VideoCore::VrDisplayTarget& target, u64 frame_number) {
+    return driver && driver->SubmitReprojectionFlip(target, frame_number);
+}
+
 void PS4_SYSV_ABI sceVideoOutSetBufferAttribute(BufferAttribute* attribute, PixelFormat pixelFormat,
                                                 u32 tilingMode, u32 aspectRatio, u32 width,
                                                 u32 height, u32 pitchInPixel) {

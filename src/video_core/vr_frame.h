@@ -18,12 +18,20 @@ struct VrLayer {
     u64* release_label{};
 };
 
+struct VrDisplayTarget {
+    s32 handle{};
+    s32 start{};
+    s32 count{};
+    u64 generation{};
+};
+
 struct VrFrame {
     VrLayer scene{};
     std::optional<VrLayer> overlay;
     Input::Vr::Pose head_pose{};
     u64 frame_number{};
     bool head_locked{};
+    std::optional<VrDisplayTarget> display_target;
 };
 
 } // namespace VideoCore

@@ -100,6 +100,9 @@ public:
     int SetRefreshRate(VideoOutPort* port, u64 refresh_rate);
 
     bool SubmitFlip(VideoOutPort* port, s32 index, s64 flip_arg, bool is_eop = false);
+    bool GetReprojectionTarget(s32 handle, s32 start, s32 count,
+                               VideoCore::VrDisplayTarget& target);
+    bool SubmitReprojectionFlip(const VideoCore::VrDisplayTarget& target, u64 frame_number);
 
 private:
     struct Request {

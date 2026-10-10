@@ -11,6 +11,10 @@ namespace Core::Loader {
 class SymbolsResolver;
 }
 
+namespace VideoCore {
+struct VrDisplayTarget;
+}
+
 namespace Libraries::VideoOut {
 
 // SceVideoOutBusType
@@ -140,6 +144,8 @@ s32 PS4_SYSV_ABI sceVideoOutColorSettingsSetGamma(SceVideoOutColorSettings* sett
 s32 PS4_SYSV_ABI sceVideoOutAdjustColor(s32 handle, const SceVideoOutColorSettings* settings);
 
 // Internal system functions
+bool GetReprojectionTarget(s32 handle, s32 start, s32 count, VideoCore::VrDisplayTarget& target);
+bool SubmitReprojectionFlip(const VideoCore::VrDisplayTarget& target, u64 frame_number);
 s32 sceVideoOutSubmitEopFlip(s32 handle, u32 buf_id, u32 mode, s64 flip_arg, void** unk);
 
 void RegisterLib(Core::Loader::SymbolsResolver* sym);
