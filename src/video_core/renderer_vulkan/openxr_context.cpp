@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <deque>
 #include <limits>
 #include <mutex>
 #include <ranges>
@@ -93,6 +94,15 @@ struct OpenXRContext::Impl {
     XrSystemId system{XR_NULL_SYSTEM_ID};
     XrSession session{XR_NULL_HANDLE};
     XrSpace local_space{XR_NULL_HANDLE};
+    XrSpace stage_space{XR_NULL_HANDLE};
+    XrReferenceSpaceType tracking_reference_type{XR_REFERENCE_SPACE_TYPE_LOCAL};
+    struct TrackingSpace {
+        XrSpace handle{XR_NULL_HANDLE};
+        XrTime since{};
+        XrPosef origin{};
+    };
+    std::vector<TrackingSpace> tracking_spaces;
+    std::deque<XrEventDataReferenceSpaceChangePending> reference_changes;
     XrSpace view_space{XR_NULL_HANDLE};
     XrSessionState session_state{XR_SESSION_STATE_UNKNOWN};
     std::chrono::steady_clock::time_point last_begin_attempt{};
@@ -135,7 +145,6 @@ struct OpenXRContext::Impl {
     std::atomic<bool> recover_session{};
     std::atomic<bool> recover_instance{};
     std::chrono::steady_clock::time_point last_recovery_attempt{};
-    XrTime reference_change{};
     PFN_xrGetVulkanGraphicsDeviceKHR get_graphics_device{};
     std::vector<std::string> instance_extensions;
     std::vector<std::string> device_extensions;
@@ -149,6 +158,9 @@ struct OpenXRContext::Impl {
 
     std::optional<Input::Vr::DeviceState> Locate(std::chrono::steady_clock::time_point time);
     Input::Vr::DeviceState Locate(XrTime time, Input::Vr::DeviceState state);
+    XrSpace GetTrackingSpace(XrTime time) const;
+    void AnchorTrackingSpace(XrTime time);
+    void UpdateReferenceSpace(XrTime time);
 
     ~Impl() {
         Input::Vr::SetTrackingProvider({});
@@ -173,8 +185,11 @@ void OpenXRContext::Impl::DestroySession() {
     if (view_space != XR_NULL_HANDLE) {
         xrDestroySpace(view_space);
     }
-    if (local_space != XR_NULL_HANDLE) {
-        xrDestroySpace(local_space);
+    if (stage_space != XR_NULL_HANDLE) {
+        xrDestroySpace(stage_space);
+    }
+    for (const auto& space : tracking_spaces) {
+        xrDestroySpace(space.handle);
     }
     if (session != XR_NULL_HANDLE) {
         xrDestroySession(session);
@@ -183,11 +198,14 @@ void OpenXRContext::Impl::DestroySession() {
     projection_views = {};
     session = XR_NULL_HANDLE;
     local_space = XR_NULL_HANDLE;
+    stage_space = XR_NULL_HANDLE;
+    tracking_reference_type = XR_REFERENCE_SPACE_TYPE_LOCAL;
     view_space = XR_NULL_HANDLE;
     session_state = XR_SESSION_STATE_UNKNOWN;
     session_running = false;
     stereo_ready = false;
-    reference_change = 0;
+    tracking_spaces.clear();
+    reference_changes.clear();
     last_begin_attempt = {};
 }
 
@@ -473,6 +491,7 @@ bool OpenXRContext::Impl::CreateSessionResources() {
         DestroySession();
         return false;
     }
+    tracking_spaces.push_back({local_space, 0, space_info.poseInReferenceSpace});
     LOG_INFO(Render_Vulkan, "OpenXR virtual camera distance: {} m", camera_distance);
     space_info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
     space_info.poseInReferenceSpace.position = {};
@@ -480,6 +499,12 @@ bool OpenXRContext::Impl::CreateSessionResources() {
         LOG_WARNING(Render_Vulkan, "Failed to create OpenXR view reference space");
         DestroySession();
         return false;
+    }
+    space_info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
+    const auto stage_result = xrCreateReferenceSpace(session, &space_info, &stage_space);
+    CheckResult(stage_result);
+    if (XR_FAILED(stage_result)) {
+        stage_space = XR_NULL_HANDLE;
     }
     if (!CreateSwapchains()) {
         LOG_WARNING(Render_Vulkan, "OpenXR stereo swapchain creation failed");
@@ -704,14 +729,25 @@ std::optional<Input::Vr::DeviceState> OpenXRContext::Impl::Locate(
                            });
 }
 
+XrSpace OpenXRContext::Impl::GetTrackingSpace(XrTime time) const {
+    for (const auto& space : tracking_spaces | std::views::reverse) {
+        if (space.since <= time) {
+            return space.handle;
+        }
+    }
+    return tracking_spaces.front().handle;
+}
+
 Input::Vr::DeviceState OpenXRContext::Impl::Locate(XrTime time, Input::Vr::DeviceState state) {
+    UpdateReferenceSpace(time);
+    const auto tracking_space = GetTrackingSpace(time);
     if (input) {
-        input->Locate(local_space, time, state);
+        input->Locate(tracking_space, time, state);
     }
     XrSpaceVelocity velocity{XR_TYPE_SPACE_VELOCITY};
     XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
     location.next = &velocity;
-    if (XR_SUCCEEDED(xrLocateSpace(view_space, local_space, time, &location))) {
+    if (XR_SUCCEEDED(xrLocateSpace(view_space, tracking_space, time, &location))) {
         state.orientation_valid =
             (location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0;
         state.position_valid = (location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0;
@@ -741,7 +777,7 @@ Input::Vr::DeviceState OpenXRContext::Impl::Locate(XrTime time, Input::Vr::Devic
     XrViewLocateInfo locate_info{XR_TYPE_VIEW_LOCATE_INFO};
     locate_info.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
     locate_info.displayTime = time;
-    locate_info.space = local_space;
+    locate_info.space = tracking_space;
     XrViewState view_state{XR_TYPE_VIEW_STATE};
     std::array<XrView, 2> views{XrView{XR_TYPE_VIEW}, XrView{XR_TYPE_VIEW}};
     u32 view_count = 0;
@@ -758,6 +794,75 @@ Input::Vr::DeviceState OpenXRContext::Impl::Locate(XrTime time, Input::Vr::Devic
         }
     }
     return state;
+}
+
+void OpenXRContext::Impl::AnchorTrackingSpace(XrTime time) {
+    if (stage_space == XR_NULL_HANDLE || tracking_reference_type != XR_REFERENCE_SPACE_TYPE_LOCAL) {
+        return;
+    }
+    XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
+    const auto result = xrLocateSpace(local_space, stage_space, time, &location);
+    CheckResult(result);
+    constexpr auto valid =
+        XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT;
+    if (XR_FAILED(result) || (location.locationFlags & valid) != valid) {
+        return;
+    }
+    XrReferenceSpaceCreateInfo info{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+    info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
+    info.poseInReferenceSpace = location.pose;
+    XrSpace space{XR_NULL_HANDLE};
+    const auto create_result = xrCreateReferenceSpace(session, &info, &space);
+    CheckResult(create_result);
+    if (XR_FAILED(create_result)) {
+        return;
+    }
+    tracking_spaces.push_back({space, time, location.pose});
+    local_space = space;
+    tracking_reference_type = XR_REFERENCE_SPACE_TYPE_STAGE;
+    reference_changes.clear();
+    LOG_INFO(Render_Vulkan, "OpenXR virtual camera anchored to the room");
+}
+
+void OpenXRContext::Impl::UpdateReferenceSpace(XrTime time) {
+    AnchorTrackingSpace(time);
+    while (!reference_changes.empty() && reference_changes.front().changeTime <= time) {
+        const auto& change = reference_changes.front();
+        auto origin = tracking_spaces.back().origin;
+        if (change.poseValid) {
+            const auto previous = ConvertPose(change.poseInPreviousSpace);
+            const auto camera = ConvertPose(origin);
+            const auto orientation =
+                Input::Vr::RelativeOrientation(camera.orientation, previous.orientation);
+            const auto position = Input::Vr::RotateToLocal(
+                previous.orientation, {camera.position[0] - previous.position[0],
+                                       camera.position[1] - previous.position[1],
+                                       camera.position[2] - previous.position[2]});
+            origin.orientation = {orientation[0], orientation[1], orientation[2], orientation[3]};
+            origin.position = {position[0], position[1], position[2]};
+        }
+        XrReferenceSpaceCreateInfo info{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+        info.referenceSpaceType = tracking_reference_type;
+        info.poseInReferenceSpace = origin;
+        XrSpace space{XR_NULL_HANDLE};
+        const auto result = xrCreateReferenceSpace(session, &info, &space);
+        CheckResult(result);
+        if (XR_FAILED(result)) {
+            recover_session = true;
+            stereo_ready = false;
+            LOG_WARNING(Render_Vulkan, "Failed to preserve OpenXR tracking origin: {}",
+                        static_cast<s32>(result));
+            return;
+        }
+        tracking_spaces.push_back({space, change.changeTime, origin});
+        local_space = space;
+        if (!change.poseValid) {
+            stereo_ready = false;
+            Input::Vr::ResetTrackingOrigin();
+            LOG_WARNING(Render_Vulkan, "OpenXR recenter did not provide its previous origin");
+        }
+        reference_changes.pop_front();
+    }
 }
 
 std::chrono::nanoseconds OpenXRContext::Update() {
@@ -872,9 +977,10 @@ std::chrono::nanoseconds OpenXRContext::Update() {
         } else if (event.type == XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING) {
             const auto& changed =
                 *reinterpret_cast<const XrEventDataReferenceSpaceChangePending*>(&event);
+            std::scoped_lock lock{impl->stereo_mutex};
             if (changed.session == impl->session &&
-                changed.referenceSpaceType == XR_REFERENCE_SPACE_TYPE_LOCAL) {
-                impl->reference_change = changed.changeTime;
+                changed.referenceSpaceType == impl->tracking_reference_type) {
+                impl->reference_changes.push_back(changed);
             }
         } else if (event.type == XR_TYPE_EVENT_DATA_EVENTS_LOST) {
             const auto& lost = *reinterpret_cast<const XrEventDataEventsLost*>(&event);
@@ -940,19 +1046,18 @@ std::chrono::nanoseconds OpenXRContext::Update() {
         .mounted = impl->user_present,
         .sample_time = std::chrono::steady_clock::now(),
     };
+    {
+        std::scoped_lock lock{impl->stereo_mutex};
+        impl->UpdateReferenceSpace(frame_state.predictedDisplayTime);
+    }
     if (const auto current = impl->Locate(state.sample_time)) {
         state = *current;
     }
-    if (impl->reference_change != 0 && frame_state.predictedDisplayTime >= impl->reference_change) {
-        std::scoped_lock lock{impl->stereo_mutex};
-        impl->reference_change = 0;
-        impl->stereo_ready = false;
-        Input::Vr::ResetTrackingOrigin();
-        state = impl->Locate(frame_state.predictedDisplayTime, state);
-    }
     if (impl->input) {
+        std::scoped_lock lock{impl->stereo_mutex};
         impl->input->Sync(impl->session_state == XR_SESSION_STATE_FOCUSED, state);
-        impl->input->Locate(impl->local_space, frame_state.predictedDisplayTime, state);
+        impl->input->Locate(impl->GetTrackingSpace(frame_state.predictedDisplayTime),
+                            frame_state.predictedDisplayTime, state);
     }
     Input::Vr::SetDeviceState(state);
     XrFrameEndInfo end_info{XR_TYPE_FRAME_END_INFO};
@@ -963,7 +1068,9 @@ std::chrono::nanoseconds OpenXRContext::Update() {
         ZoneScopedN("OpenXR frame end");
         std::scoped_lock stereo_lock{impl->stereo_mutex};
         XrCompositionLayerProjection projection{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
-        projection.space = impl->head_locked ? impl->view_space : impl->local_space;
+        projection.space = impl->head_locked
+                               ? impl->view_space
+                               : impl->GetTrackingSpace(frame_state.predictedDisplayTime);
         projection.viewCount = impl->projection_views.size();
         projection.views = impl->projection_views.data();
         const auto* layer = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&projection);
