@@ -87,9 +87,7 @@ s32 PS4_SYSV_ABI sceNpScoreCreateNpTitleCtx(OrbisNpServiceLabel serviceLabel,
 
 s32 PS4_SYSV_ABI sceNpScoreCreateNpTitleCtxA(OrbisNpServiceLabel npServiceLabel,
                                              UserService::OrbisUserServiceUserId selfId) {
-
-    if (!Libraries::Np::NpHandler::GetInstance().IsPsnSignedIn(selfId)) {
-        LOG_ERROR(Lib_NpScore, "userId {} is not signed in to NP", selfId);
+    if (!UserManagement.GetUserByID(selfId)) {
         return ORBIS_NP_ERROR_SIGNED_OUT;
     }
     if (npServiceLabel == static_cast<OrbisNpServiceLabel>(ORBIS_NP_INVALID_SERVICE_LABEL)) {
