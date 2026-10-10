@@ -579,6 +579,7 @@ s32 PS4_SYSV_ABI sceVrTrackerGetResult(const OrbisVrTrackerGetResultParam* param
         }
         if (controller.orientation_valid || controller.position_valid) {
             result->status = ORBIS_VR_TRACKER_STATUS_TRACKING;
+            result->device_timestamp = process_time;
         }
         const bool position_valid =
             controller.position_valid && (!move_registered || controller.orientation_valid);
@@ -647,6 +648,7 @@ s32 PS4_SYSV_ABI sceVrTrackerGetResult(const OrbisVrTrackerGetResultParam* param
     }
     if (state->orientation_valid || state->position_valid) {
         result->status = ORBIS_VR_TRACKER_STATUS_TRACKING;
+        result->device_timestamp = process_time;
     }
     result->position_quality = state->position_valid
                                    ? (state->position_tracked ? ORBIS_VR_TRACKER_QUALITY_FULL
